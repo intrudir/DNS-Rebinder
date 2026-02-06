@@ -323,6 +323,14 @@ Three log files are created per session:
 
 ## Browser Attack Payloads
 
+> ⚠️ **IN PROGRESS — NOT WORKING YET**
+> 
+> Browser DNS rebinding is tricky because browsers cache DNS aggressively (~60s) regardless of TTL.
+> The payloads below are functional but require waiting for browser DNS cache to expire.
+> For instant rebinding, use SSRF/server-side scenarios with the count strategy instead.
+> 
+> **Status:** Core DNS rebinding works. Browser payloads need work to bypass DNS caching reliably.
+
 The built-in HTTP server (port 8080 by default) serves ready-to-use attack payloads.
 
 ### How browser DNS rebinding works

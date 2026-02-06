@@ -37,6 +37,20 @@ from twisted.python.runtime import platform
 # ============================================================================
 # Payload Generator
 # ============================================================================
+#
+# ⚠️  IN PROGRESS — NOT WORKING YET
+#
+# Browser DNS rebinding is tricky because browsers cache DNS aggressively
+# (~60s for Chrome) regardless of TTL=0. The payloads work but require
+# waiting for browser DNS cache to expire before rebind happens.
+#
+# For instant rebinding, use SSRF/server-side scenarios with count strategy.
+#
+# TODO: Investigate techniques to bypass browser DNS caching:
+#   - Connection failure forcing re-resolution
+#   - Multiple A records with failover
+#   - WebSocket-based approaches
+# ============================================================================
 
 class PayloadGenerator:
     """Generate browser DNS rebinding attack payloads."""
