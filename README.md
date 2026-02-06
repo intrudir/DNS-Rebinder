@@ -28,7 +28,19 @@ Same as above, but cycle through LAN IPs (192.168.1.x). Discover what's on their
 
 **Result:** Find routers, printers, IoT devices, internal apps on victim's network.
 
-### 5. Capture Exfiltrated Data
+### 5. Exploit Headless Browsers (SSRF + Browser Rebinding)
+Many apps use headless browsers (Puppeteer, Playwright, Selenium) for PDF generation, screenshots, link previews, or HTML rendering. If they fetch user-supplied URLs, your page loads in their headless browser, JS executes, DNS rebinds — now you're reading from *their* localhost/internal network.
+
+**Common targets:**
+- PDF generators ("convert this URL to PDF")
+- Screenshot/thumbnail services
+- Link preview generators (Slack-style unfurling)
+- HTML-to-image converters
+- Web scrapers that render JavaScript
+
+**Result:** Turn a "render this URL" feature into full internal network access.
+
+### 6. Capture Exfiltrated Data
 Any subdomain query to `*.exfil.yourdomain.com` is logged. Use for blind command injection, XXE, SSTI — anywhere you can trigger a DNS lookup.
 
 **Result:** Confirm code execution, extract data through DNS (bypasses HTTP egress filters).
