@@ -113,7 +113,8 @@ class PayloadGenerator:
     
     <script>
     const CONFIG = {{
-        targetPort: window.location.port || {target_port} || 80,
+        // window.location.port is empty string for default ports (80/443)
+        targetPort: window.location.port ? parseInt(window.location.port) : (window.location.protocol === 'https:' ? 443 : 80),
         targetPath: '{target_path}',
         delayMs: {delay_ms},
         maxAttempts: 30,
