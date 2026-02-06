@@ -27,6 +27,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+CONFIG_FILE = Path("dns-rebinder.yaml")
+
 from twisted.internet import reactor, stdio, endpoints
 from twisted.web import server as web_server, resource
 from twisted.names import dns, server, hosts as hosts_module, client, resolve, root
@@ -1572,6 +1580,38 @@ def validate_ip(ip: str) -> bool:
         return False
 
 
+def load_config(config_path: Path) -> Optional[dict]:
+    """Load configuration from YAML file."""
+    if not config_path.exists():
+        return None
+    
+    if not HAS_YAML:
+        print(f"⚠️  Config file found but PyYAML not installed. Run: pip install pyyaml")
+        return None
+    
+    try:
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        print(f"⚠️  Error loading config: {e}")
+        return None
+
+
+def save_config(config_path: Path, config: dict):
+    """Save configuration to YAML file."""
+    if not HAS_YAML:
+        print(f"⚠️  Cannot save config - PyYAML not installed. Run: pip install pyyaml")
+        return False
+    
+    try:
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        return True
+    except Exception as e:
+        print(f"⚠️  Error saving config: {e}")
+        return False
+
+
 def prompt(text: str, default: Optional[str] = None, validator=None) -> str:
     """Prompt for input with optional default and validation."""
     while True:
@@ -1727,14 +1767,34 @@ def run_setup_wizard() -> argparse.Namespace:
     # Also create a one-liner version
     cli_oneliner = f"sudo python3 dns-rebinder.py -w {args.whitelist} -r {','.join(args.rebind)} -s {args.server} -d {args.domain} -p {args.port} --strategy {strategy_cli} --exfil-prefix {args.exfil_prefix}"
     
-    print("  \033[1mCLI equivalent (for reuse):\033[0m")
-    print(f"\033[96m{cli_cmd}\033[0m")
+    # Ask to save config file
     print()
-    print("  \033[1mOne-liner:\033[0m")
-    print(f"  \033[96m{cli_oneliner}\033[0m")
-    print()
+    save_conf = input("  Save config file for future use? [Y/n]: ").strip().lower()
+    if not save_conf or save_conf in ('y', 'yes'):
+        config_data = {
+            'whitelist': args.whitelist,
+            'rebind': args.rebind,
+            'server': args.server,
+            'domain': args.domain,
+            'port': args.port,
+            'strategy': strategy_cli,
+            'exfil_prefix': args.exfil_prefix,
+        }
+        if save_config(CONFIG_FILE, config_data):
+            print(f"  ✅ Config saved to {CONFIG_FILE}")
+            print(f"     Next time just run: \033[96msudo python3 dns-rebinder.py\033[0m")
+        print()
+    else:
+        # Show CLI equivalent if not saving config
+        print()
+        print("  \033[1mCLI equivalent (for reuse):\033[0m")
+        print(f"\033[96m{cli_cmd}\033[0m")
+        print()
+        print("  \033[1mOne-liner:\033[0m")
+        print(f"  \033[96m{cli_oneliner}\033[0m")
+        print()
     
-    confirm = input("  Start server with this config? [Y/n]: ").strip().lower()
+    confirm = input("  Start server? [Y/n]: ").strip().lower()
     if confirm and confirm not in ('y', 'yes'):
         print("\n  Aborted.")
         sys.exit(0)
@@ -1764,6 +1824,8 @@ Strategies:
     )
     
     parser.add_argument('positional', nargs='*', help=argparse.SUPPRESS)
+    parser.add_argument('--config', '-c', type=Path, default=CONFIG_FILE,
+                        help=f'Config file path (default: {CONFIG_FILE})')
     parser.add_argument('--whitelist', '-w', help='Whitelisted IP (passes allowlist)')
     parser.add_argument('--rebind', '-r', help='Rebind IP(s), comma-separated')
     parser.add_argument('--server', '-s', help='This server\'s IP')
@@ -1796,10 +1858,29 @@ Strategies:
         args.port = int(args.positional[3])
         args.domain = args.positional[4]
     
-    # No args? Run wizard
+    # No args? Check for config file, then wizard
     has_args = args.whitelist or args.rebind or args.server or args.domain or args.positional
+    config_path = args.config if args.config else CONFIG_FILE
     if not has_args:
-        return run_setup_wizard()
+        # Try loading config file
+        cfg = load_config(config_path)
+        if cfg:
+            print(f"📁 Loading config from {CONFIG_FILE}")
+            args.whitelist = cfg.get('whitelist')
+            args.rebind = cfg.get('rebind', [])
+            if isinstance(args.rebind, str):
+                args.rebind = [ip.strip() for ip in args.rebind.split(',')]
+            args.server = cfg.get('server')
+            args.domain = cfg.get('domain')
+            args.port = cfg.get('port', 53)
+            args.exfil_prefix = cfg.get('exfil_prefix', 'exfil')
+            
+            # Parse strategy from config
+            strategy_str = cfg.get('strategy', 'count 1')
+            parts = strategy_str.split()
+            args.strategy = parts
+        else:
+            return run_setup_wizard()
     
     # Validate required args
     missing = []
