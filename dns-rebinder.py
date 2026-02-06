@@ -1351,7 +1351,7 @@ def print_banner():
     print(f'  Strategy:        {config.strategy.describe()}')
     print(f'  Exfil domain:    *.{config.exfil_prefix}.{config.domain}')
     print()
-    print(f'  \033[93m📋 Attack URL:\033[0m    http://attack.{config.domain}:{config.http_port}/single?port=8080')
+    print(f'  \033[93m📋 Attack URL:\033[0m    http://attack.{config.domain}:{config.http_port}/single')
     print()
     print(f'  Main log:        {config.logger.main_log}')
     print(f'  JSON log:        {config.logger.json_log}')
