@@ -4,12 +4,45 @@ DNS rebinding attack server with interactive control, multiple strategies, and d
 
 Based on [cujanovic's dns.py](https://github.com/cujanovic/SSRF-Testing/blob/master/dns.py).
 
+---
+
+## What Can This Do?
+
+### 1. Bypass SSRF IP Allowlists
+Target has SSRF but validates that the URL resolves to an "allowed" IP? This tool returns an allowed IP on first lookup, then switches to your target (127.0.0.1, 169.254.169.254, internal IPs) on subsequent lookups.
+
+**Result:** Access localhost, cloud metadata, internal services through their SSRF.
+
+### 2. Scan Internal Networks via SSRF
+Using multi-target mode, each DNS query returns a different internal IP. Feed the SSRF a list of URLs and map their internal network without direct access.
+
+**Result:** Discover internal hosts, services, and infrastructure.
+
+### 3. Attack Victim's Localhost via Browser
+Send a victim a link. Their browser loads your page, then DNS rebinds to 127.0.0.1. Your JavaScript (running in their browser) can now read responses from their localhost services.
+
+**Result:** Steal data from local dev servers, admin panels, databases — anything running on their machine.
+
+### 4. Scan Victim's Local Network via Browser  
+Same as above, but cycle through LAN IPs (192.168.1.x). Discover what's on their home/office network from their own browser.
+
+**Result:** Find routers, printers, IoT devices, internal apps on victim's network.
+
+### 5. Capture Exfiltrated Data
+Any subdomain query to `*.exfil.yourdomain.com` is logged. Use for blind command injection, XXE, SSTI — anywhere you can trigger a DNS lookup.
+
+**Result:** Confirm code execution, extract data through DNS (bypasses HTTP egress filters).
+
+---
+
 ## Features
 
 - **Multiple rebind strategies** — count, time-based, round-robin, random, multi-target
 - **Live control** — Change IPs, strategies on the fly without restart
 - **Subdomain exfiltration** — Capture data encoded in DNS queries
+- **Browser attack payloads** — Built-in HTTP server with ready-to-use attacks
 - **Structured logging** — Human-readable + JSON logs
+- **Setup wizard** — Interactive config when run with no args
 
 ## Installation
 
@@ -210,6 +243,7 @@ While running, type commands at the prompt:
 | `hosts` | List all tracked hostnames |
 | `log [n]` | Show last N queries |
 | `exfil` | Show exfil summary and usage |
+| `payload` | Show browser attack payload URLs |
 | `help` | Show all commands |
 | `quit` | Stop server |
 
