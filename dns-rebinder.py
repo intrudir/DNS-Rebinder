@@ -174,10 +174,12 @@ def create_strategy(strategy_type: StrategyType, **kwargs) -> RebindStrategy:
 # Logging
 # ============================================================================
 
+OUTPUT_DIR = Path("output")
+
 class Logger:
     """Structured logging with JSON support."""
     
-    def __init__(self, log_dir: Path = Path(".")):
+    def __init__(self, log_dir: Path = OUTPUT_DIR):
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
