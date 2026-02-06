@@ -1674,20 +1674,11 @@ def run_setup_wizard() -> argparse.Namespace:
     args.exfil_prefix = prompt("Exfil prefix", default="exfil")
     print()
     
-    print("  \033[1mBrowser payload server\033[0m: Enable HTTP server for browser attack payloads?")
-    http_enable = prompt("Enable HTTP payloads? (y/N)", default="N").strip().lower() in ("y", "yes")
-    args.http_enable = bool(http_enable)
-    if args.http_enable:
-        print("  \033[1mHTTP port\033[0m: Port for payload HTTP server (browser attacks)")
-        args.http_port = int(prompt("HTTP port", default="8080"))
-        # Browser payload defaults: dedicated rebinding namespace
-        args.rb_zone = f"rb.{args.domain}"
-        args.static_hosts = f"static.{args.domain}"
-    else:
-        args.http_port = 8080
-        args.rb_zone = None
-        args.static_hosts = None
-    print()
+    # HTTP payloads disabled by default (use --http-enable flag if needed)
+    args.http_enable = False
+    args.http_port = 8080
+    args.rb_zone = None
+    args.static_hosts = None
     
     args.ttl = 0  # Always 0 for rebinding
     
@@ -1699,11 +1690,6 @@ def run_setup_wizard() -> argparse.Namespace:
     print(f"    Server IP:     {args.server}")
     print(f"    Domain:        {args.domain}")
     print(f"    DNS port:      {args.port}")
-    print(f"    HTTP payloads: {'enabled' if getattr(args,'http_enable',False) else 'disabled'}")
-    if getattr(args,'http_enable',False):
-        print(f"    HTTP port:     {args.http_port}")
-        print(f"    RB zone:       {args.rb_zone}")
-        print(f"    Static host:   {args.static_hosts}")
     print(f"    Strategy:      {args.strategy.describe()}")
     print(f"    Exfil domain:  *.{args.exfil_prefix}.{args.domain}")
     print()
@@ -1727,19 +1713,18 @@ def run_setup_wizard() -> argparse.Namespace:
     else:
         strategy_cli = "count 1"
     
-    # Build full CLI command (always include all options for clarity)
+    # Build full CLI command (only essential options)
     cli_cmd = f"""sudo python3 dns-rebinder.py \\
     -w {args.whitelist} \\
     -r {','.join(args.rebind)} \\
     -s {args.server} \\
     -d {args.domain} \\
     -p {args.port} \\
-    --http-port {args.http_port} \\
     --strategy {strategy_cli} \\
     --exfil-prefix {args.exfil_prefix}"""
     
     # Also create a one-liner version
-    cli_oneliner = f"sudo python3 dns-rebinder.py -w {args.whitelist} -r {','.join(args.rebind)} -s {args.server} -d {args.domain} -p {args.port} --http-port {args.http_port} --strategy {strategy_cli} --exfil-prefix {args.exfil_prefix}"
+    cli_oneliner = f"sudo python3 dns-rebinder.py -w {args.whitelist} -r {','.join(args.rebind)} -s {args.server} -d {args.domain} -p {args.port} --strategy {strategy_cli} --exfil-prefix {args.exfil_prefix}"
     
     print("  \033[1mCLI equivalent (for reuse):\033[0m")
     print(f"\033[96m{cli_cmd}\033[0m")
