@@ -29,7 +29,7 @@ from typing import Optional
 
 from twisted.internet import reactor, stdio, endpoints
 from twisted.web import server as web_server, resource
-from twisted.names import dns, server, hosts as hosts_module, client, cache, resolve, root
+from twisted.names import dns, server, hosts as hosts_module, client, resolve, root
 from twisted.protocols.basic import LineReceiver
 from twisted.python.runtime import platform
 
@@ -1500,7 +1500,8 @@ def create_resolver(source_tracker: dict):
         upstream = root.bootstrap(bootstrap, resolverFactory=client.Resolver)
     
     rebind_resolver = RebindResolver(hosts_file, source_tracker=source_tracker)
-    return resolve.ResolverChain([rebind_resolver, cache.CacheResolver(), upstream])
+    # No caching - rebinding requires fresh lookups every time
+    return resolve.ResolverChain([rebind_resolver, upstream])
 
 
 # ============================================================================
