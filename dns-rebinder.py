@@ -1638,17 +1638,25 @@ def run_setup_wizard() -> argparse.Namespace:
     else:
         strategy_cli = "count 1"
     
-    cli_cmd = f"sudo python3 dns-rebinder.py -w {args.whitelist} -r {','.join(args.rebind)} -s {args.server} -d {args.domain}"
-    if args.port != 53:
-        cli_cmd += f" -p {args.port}"
-    if args.http_port != 8080:
-        cli_cmd += f" --http-port {args.http_port}"
-    cli_cmd += f" --strategy {strategy_cli}"
-    if args.exfil_prefix != "exfil":
-        cli_cmd += f" --exfil-prefix {args.exfil_prefix}"
+    # Build full CLI command (always include all options for clarity)
+    cli_cmd = f"""sudo python3 dns-rebinder.py \\
+    -w {args.whitelist} \\
+    -r {','.join(args.rebind)} \\
+    -s {args.server} \\
+    -d {args.domain} \\
+    -p {args.port} \\
+    --http-port {args.http_port} \\
+    --strategy {strategy_cli} \\
+    --exfil-prefix {args.exfil_prefix}"""
+    
+    # Also create a one-liner version
+    cli_oneliner = f"sudo python3 dns-rebinder.py -w {args.whitelist} -r {','.join(args.rebind)} -s {args.server} -d {args.domain} -p {args.port} --http-port {args.http_port} --strategy {strategy_cli} --exfil-prefix {args.exfil_prefix}"
     
     print("  \033[1mCLI equivalent (for reuse):\033[0m")
-    print(f"  \033[96m{cli_cmd}\033[0m")
+    print(f"\033[96m{cli_cmd}\033[0m")
+    print()
+    print("  \033[1mOne-liner:\033[0m")
+    print(f"  \033[96m{cli_oneliner}\033[0m")
     print()
     
     confirm = input("  Start server with this config? [Y/n]: ").strip().lower()
