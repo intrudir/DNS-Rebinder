@@ -595,7 +595,28 @@ class PayloadPage(resource.Resource):
             )
             
         elif self.path == 'portscan':
-            ports_str = args.get('ports', '80,443,8080,3000,5000')
+            # Default ports: common web servers, frameworks, admin panels
+            # 80/443: Apache, Nginx, IIS
+            # 8080/8443: Tomcat, Jenkins, alt HTTP/HTTPS
+            # 3000: Node.js, React dev, Grafana
+            # 5000: Flask, Docker Registry
+            # 8000: Django, Python http.server
+            # 4200: Angular dev
+            # 8888: Jupyter Notebook
+            # 9000: PHP-FPM, SonarQube
+            # 9090: Prometheus
+            # 9200: Elasticsearch
+            # 5601: Kibana
+            # 3306: MySQL (web UIs)
+            # 5432: PostgreSQL (web UIs)
+            # 6379: Redis (web UIs)
+            # 27017: MongoDB (web UIs)
+            # 8081: Nexus, misc
+            # 4443: alt HTTPS
+            # 8888: JDWP, Jupyter
+            # 10000: Webmin
+            default_ports = '80,443,8080,8443,3000,5000,8000,4200,8888,9000,9090,9200,5601,8081,4443,10000,3001,5001,8001,4000'
+            ports_str = args.get('ports', default_ports)
             ports = [int(p) for p in ports_str.split(',')]
             delay = int(args.get('delay', 3000))
             
