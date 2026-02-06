@@ -1059,6 +1059,9 @@ class ServerConfig:
 # Global config instance (set in main)
 config: Optional[ServerConfig] = None
 
+# Global source tracking (simpler than passing dicts through Twisted)
+_last_dns_source = {'ip': 'unknown', 'port': 0}
+
 
 # ============================================================================
 # Command Interface
@@ -1330,7 +1333,10 @@ class RebindResolver(hosts_module.Resolver):
         # Get source IP from tracker (set by protocol handlers)
         source_info = self.source_tracker.get('current')
         if not source_info or source_info[0] == 'unknown':
-            source_info = self.source_tracker.get('last_udp', ('unknown', 0))
+            source_info = self.source_tracker.get('last_udp')
+        if not source_info or source_info[0] == 'unknown':
+            # Fallback to global tracker
+            source_info = (_last_dns_source['ip'], _last_dns_source['port'])
         response_ip = config.get_response_ip(hostname, source_info[0], source_info[1])
         
         return tuple([
@@ -1361,9 +1367,11 @@ class LoggingDNSDatagramProtocol(dns.DNSDatagramProtocol):
         self.source_tracker = source_tracker or {}
     
     def datagramReceived(self, datagram, addr):
-        # Store source before processing
+        global _last_dns_source
+        # Store source before processing (both in tracker and global)
         self.source_tracker['current'] = (addr[0], addr[1])
         self.source_tracker['last_udp'] = (addr[0], addr[1])
+        _last_dns_source = {'ip': addr[0], 'port': addr[1]}
         return super().datagramReceived(datagram, addr)
 
 
