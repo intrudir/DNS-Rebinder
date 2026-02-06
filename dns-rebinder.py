@@ -1097,8 +1097,9 @@ Strategies:
     if missing:
         parser.error(f'Missing required arguments: {", ".join(missing)}')
     
-    # Parse rebind IPs
-    args.rebind = [ip.strip() for ip in args.rebind.split(',')]
+    # Parse rebind IPs (might already be a list from config file)
+    if isinstance(args.rebind, str):
+        args.rebind = [ip.strip() for ip in args.rebind.split(',')]
     
     # Parse strategy
     strategy_name = args.strategy[0].lower()
