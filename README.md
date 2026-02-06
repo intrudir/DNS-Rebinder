@@ -69,6 +69,11 @@ pip install twisted
 sudo python3 dns-rebinder.py
 ```
 
+The wizard saves your config to `dns-rebinder.yaml`. Next time, just run:
+```bash
+sudo python3 dns-rebinder.py
+```
+
 ### Command line
 ```bash
 sudo python3 dns-rebinder.py \
@@ -83,6 +88,30 @@ sudo python3 dns-rebinder.py \
 dig test.evil.com @YOUR_SERVER_IP   # Returns 8.8.8.8
 dig test.evil.com @YOUR_SERVER_IP   # Returns 127.0.0.1 (rebound!)
 ```
+
+---
+
+## Config File
+
+Settings are saved to `dns-rebinder.yaml` after running the wizard.
+
+```yaml
+whitelist: 8.8.8.8
+rebind:
+  - 127.0.0.1
+server: 1.2.3.4
+domain: evil.com
+port: 53
+strategy: count 1
+exfil_prefix: exfil
+```
+
+**Custom config path:**
+```bash
+sudo python3 dns-rebinder.py -c /path/to/config.yaml
+```
+
+CLI arguments override config file values.
 
 ---
 
