@@ -1328,7 +1328,9 @@ class RebindResolver(hosts_module.Resolver):
         hostname = name.decode('utf-8')
         
         # Get source IP from tracker (set by protocol handlers)
-        source_info = self.source_tracker.get('current', ('unknown', 0))
+        source_info = self.source_tracker.get('current')
+        if not source_info or source_info[0] == 'unknown':
+            source_info = self.source_tracker.get('last_udp', ('unknown', 0))
         response_ip = config.get_response_ip(hostname, source_info[0], source_info[1])
         
         return tuple([
@@ -1359,7 +1361,9 @@ class LoggingDNSDatagramProtocol(dns.DNSDatagramProtocol):
         self.source_tracker = source_tracker or {}
     
     def datagramReceived(self, datagram, addr):
+        # Store source before processing
         self.source_tracker['current'] = (addr[0], addr[1])
+        self.source_tracker['last_udp'] = (addr[0], addr[1])
         return super().datagramReceived(datagram, addr)
 
 
