@@ -1490,6 +1490,38 @@ def run_setup_wizard() -> argparse.Namespace:
     print(f"    Exfil domain:  *.{args.exfil_prefix}.{args.domain}")
     print()
     
+    # Build CLI command for reuse
+    strategy_desc = args.strategy.describe()
+    if "count" in strategy_desc:
+        threshold = strategy_desc.split("after ")[1].split(" ")[0]
+        strategy_cli = f"count {threshold}"
+    elif "time" in strategy_desc:
+        delay = strategy_desc.split("after ")[1].split("s")[0]
+        strategy_cli = f"time {delay}"
+    elif "round-robin" in strategy_desc:
+        strategy_cli = "round-robin"
+    elif "random" in strategy_desc:
+        prob = strategy_desc.split("(")[1].split("%")[0]
+        strategy_cli = f"random {float(prob)/100}"
+    elif "multi-target" in strategy_desc:
+        threshold = strategy_desc.split("after ")[1].split(" ")[0]
+        strategy_cli = f"multi-target {threshold}"
+    else:
+        strategy_cli = "count 1"
+    
+    cli_cmd = f"sudo python3 dns-rebinder.py -w {args.whitelist} -r {','.join(args.rebind)} -s {args.server} -d {args.domain}"
+    if args.port != 53:
+        cli_cmd += f" -p {args.port}"
+    if args.http_port != 8080:
+        cli_cmd += f" --http-port {args.http_port}"
+    cli_cmd += f" --strategy {strategy_cli}"
+    if args.exfil_prefix != "exfil":
+        cli_cmd += f" --exfil-prefix {args.exfil_prefix}"
+    
+    print("  \033[1mCLI equivalent (for reuse):\033[0m")
+    print(f"  \033[96m{cli_cmd}\033[0m")
+    print()
+    
     confirm = input("  Start server with this config? [Y/n]: ").strip().lower()
     if confirm and confirm not in ('y', 'yes'):
         print("\n  Aborted.")
