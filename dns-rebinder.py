@@ -320,6 +320,9 @@ class ServerConfig:
         '172.217.0.0/16'
     ])
     
+    # Per-host IP overrides (hostname -> IP, bypasses strategy)
+    host_overrides: dict[str, str] = field(default_factory=dict)
+    
     # State tracking
     host_states: dict[str, HostState] = field(default_factory=dict)
     recent_queries: deque = field(default_factory=lambda: deque(maxlen=100))
@@ -371,22 +374,35 @@ class ServerConfig:
         # Check for exfil data
         self.check_exfil(hostname_lower, source_ip)
         
-        # Get/update host state
-        state = self.get_host_state(hostname_lower)
-        
-        # DEBUG: Print state before strategy decision
-        print(f"  DEBUG: {hostname_lower} query_count={state.query_count}")
-        
-        # Determine response IP using strategy
-        response_ip = self.strategy.get_ip(
-            hostname_lower,
-            self.whitelist_ip,
-            self.rebind_ips,
-            state.query_count,
-            state.first_seen
-        )
-        
-        is_rebind = response_ip in self.rebind_ips
+        # Check for per-host override (bypasses strategy)
+        query_count = 0
+        if hostname_lower in self.host_overrides:
+            response_ip = self.host_overrides[hostname_lower]
+            is_rebind = response_ip != self.whitelist_ip
+            strategy_desc = "host-override"
+        else:
+            # Get/update host state
+            state = self.get_host_state(hostname_lower)
+            
+            # DEBUG: Print state before strategy decision
+            print(f"  DEBUG: {hostname_lower} query_count={state.query_count}")
+            
+            # Determine response IP using strategy
+            response_ip = self.strategy.get_ip(
+                hostname_lower,
+                self.whitelist_ip,
+                self.rebind_ips,
+                state.query_count,
+                state.first_seen
+            )
+            
+            is_rebind = response_ip in self.rebind_ips
+            strategy_desc = self.strategy.describe()
+            query_count = state.query_count
+            
+            # Update state
+            state.query_count += 1
+            state.last_response = response_ip
         
         # Log the query
         self.logger.query(
@@ -396,13 +412,10 @@ class ServerConfig:
             source_port=source_port,
             query_type="A",
             is_rebind=is_rebind,
-            query_count=state.query_count,
-            strategy=self.strategy.describe()
+            query_count=query_count,
+            strategy=strategy_desc
         )
         
-        # Update state
-        state.query_count += 1
-        state.last_response = response_ip
         self.total_queries += 1
         if is_rebind:
             self.total_rebinds += 1
@@ -460,8 +473,10 @@ class CommandProtocol(LineReceiver):
         'set rebind <ip>[,ip2,...]': 'Change rebind IP(s)', 
         'set strategy <name> [opts]': 'Change strategy (count/time/round-robin/random/multi-target)',
         'set exfil <prefix>': 'Change exfil subdomain prefix',
+        'set host <hostname> <ip>': 'Set fixed IP for hostname (bypasses strategy)',
+        'unset host <hostname>': 'Remove fixed IP override for hostname',
         'reset [hostname]': 'Reset query state (all or specific host)',
-        'hosts': 'Show all tracked hostnames',
+        'hosts': 'Show all tracked hostnames and overrides',
         'log [n]': 'Show recent queries (default: 20)',
         'exfil': 'Show exfiltrated data summary',
         'quit': 'Stop the server',
@@ -497,6 +512,8 @@ class CommandProtocol(LineReceiver):
                 self.cmd_log(args)
             elif cmd == 'exfil':
                 self.cmd_exfil()
+            elif cmd == 'unset':
+                self.cmd_unset(args)
             elif cmd in ('quit', 'exit', 'q'):
                 self.cmd_quit()
             else:
@@ -547,12 +564,23 @@ class CommandProtocol(LineReceiver):
     
     def cmd_set(self, args: list):
         if len(args) < 2:
-            self.send('Usage: set <whitelist|rebind|strategy|exfil> <value>')
+            self.send('Usage: set <whitelist|rebind|strategy|exfil|host> <value>')
             return
         
         key = args[0].lower()
         
-        if key == 'whitelist':
+        if key == 'host':
+            if len(args) < 3:
+                self.send('Usage: set host <hostname> <ip>')
+                return
+            hostname = args[1].lower().rstrip('.')
+            ip = args[2]
+            self._validate_ip(ip)
+            config.host_overrides[hostname] = ip
+            config.logger.config_change(f'host_override:{hostname}', '(none)', ip)
+            self.send(f'Host override: {hostname} -> {ip}')
+            
+        elif key == 'whitelist':
             self._validate_ip(args[1])
             old = config.whitelist_ip
             config.whitelist_ip = args[1]
@@ -603,6 +631,23 @@ class CommandProtocol(LineReceiver):
         else:
             self.send(f'Unknown setting: {key}')
     
+    def cmd_unset(self, args: list):
+        if len(args) < 2:
+            self.send('Usage: unset host <hostname>')
+            return
+        
+        key = args[0].lower()
+        if key == 'host':
+            hostname = args[1].lower().rstrip('.')
+            if hostname in config.host_overrides:
+                old_ip = config.host_overrides.pop(hostname)
+                config.logger.config_change(f'host_override:{hostname}', old_ip, '(removed)')
+                self.send(f'Removed host override: {hostname} (was -> {old_ip})')
+            else:
+                self.send(f'No override for: {hostname}')
+        else:
+            self.send(f'Unknown unset target: {key}')
+    
     def cmd_reset(self, args: list):
         if args:
             hostname = args[0]
@@ -617,19 +662,31 @@ class CommandProtocol(LineReceiver):
             self.send(f'Reset all host states ({count} hosts)')
     
     def cmd_hosts(self):
+        # Show host overrides first
+        if config.host_overrides:
+            self.send(f'\nHost overrides ({len(config.host_overrides)}):')
+            self.send('─' * 70)
+            self.send(f'  {"Hostname":40} {"Fixed IP":>26}')
+            self.send('─' * 70)
+            for hostname, ip in sorted(config.host_overrides.items()):
+                self.send(f'  {hostname:40} {ip:>26}')
+            self.send('')
+        
         if not config.host_states:
-            self.send('No hosts tracked yet.')
+            if not config.host_overrides:
+                self.send('No hosts tracked yet.')
             return
         
-        self.send(f'\nTracked hosts ({len(config.host_states)}):')
+        self.send(f'Tracked hosts ({len(config.host_states)}):')
         self.send('─' * 70)
         self.send(f'  {"Hostname":40} {"Queries":>8} {"Last Response":>18}')
         self.send('─' * 70)
         
         for hostname, state in sorted(config.host_states.items()):
             is_rebind = state.last_response in config.rebind_ips
+            override = " [override]" if hostname in config.host_overrides else ""
             status = "REBIND" if is_rebind else "whitelist"
-            self.send(f'  {hostname:40} {state.query_count:>8} {state.last_response:>15} ({status})')
+            self.send(f'  {hostname:40} {state.query_count:>8} {state.last_response:>15} ({status}){override}')
         self.send('')
     
     def cmd_log(self, args: list):
