@@ -28,6 +28,7 @@ Any subdomain query to `*.exfil.yourdomain.com` is logged. Use for blind command
 ## Features
 
 - **Multiple rebind strategies** — count, time-based, round-robin, random, multi-target
+- **Per-host overrides** — Set fixed IPs for specific hostnames (bypasses strategy)
 - **Live control** — Change IPs, strategies on the fly without restart
 - **Subdomain exfiltration** — Capture data encoded in DNS queries
 - **Config file** — Save your settings, just run `sudo python3 dns-rebinder.py`
@@ -247,14 +248,52 @@ While running, type commands at the prompt:
 | `set rebind <ip>[,ip2,...]` | Change rebind IPs |
 | `set strategy <name> [opts]` | Change strategy live |
 | `set exfil <prefix>` | Change exfil subdomain prefix |
+| `set host <hostname> <ip>` | Set fixed IP for hostname (bypasses strategy) |
+| `unset host <hostname>` | Remove fixed IP override |
 | `reset [hostname]` | Reset query state |
-| `hosts` | List all tracked hostnames |
+| `hosts` | List all tracked hostnames and overrides |
 | `log [n]` | Show last N queries |
 | `exfil` | Show exfil summary |
 | `help` | Show all commands |
 | `quit` | Stop server |
 
-### Examples
+---
+
+## Per-Host Overrides
+
+Need different IPs for different hostnames? Use `set host` to override the strategy for specific hosts.
+
+```
+> set host api.evil.com 127.0.0.1
+Host override: api.evil.com -> 127.0.0.1
+
+> set host admin.evil.com 169.254.169.254
+Host override: admin.evil.com -> 169.254.169.254
+
+> hosts
+Host overrides (2):
+──────────────────────────────────────────────────────────────────────
+  Hostname                                               Fixed IP
+──────────────────────────────────────────────────────────────────────
+  api.evil.com                                          127.0.0.1
+  admin.evil.com                                 169.254.169.254
+```
+
+**How it works:**
+- Overrides **bypass the rebind strategy** — the hostname always returns the fixed IP
+- Hostnames without overrides use the normal strategy (count, time, etc.)
+- Remove an override with `unset host <hostname>`
+
+**Example use case:** Target resolves multiple hostnames, each should hit a different internal IP:
+```
+> set host db.evil.com 10.0.0.50
+> set host cache.evil.com 10.0.0.51
+> set host api.evil.com 127.0.0.1
+```
+
+---
+
+### Command Examples
 
 ```
 > set rebind 169.254.169.254
